@@ -1,0 +1,8 @@
+.pio/
+.venv/
+backups/*.bin
+__pycache__/
+.pytest_cache/
+*.pyc
+alarm_output/
+include/wifi_credentials.h
