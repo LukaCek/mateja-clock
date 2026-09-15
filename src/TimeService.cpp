@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include "MessageLogic.h"
+
 namespace {
 
 constexpr char kTimezone[] = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -105,6 +107,21 @@ bool TimeService::update() {
 
 bool TimeService::wifiConnected() const {
   return WiFi.status() == WL_CONNECTED;
+}
+
+std::int32_t TimeService::utcOffsetSeconds() const {
+  if (!snapshot_.valid) {
+    return 0;
+  }
+  const std::int64_t localFloor =
+      messagelogic::daysFromCivil(snapshot_.year, snapshot_.month,
+                                  snapshot_.day) *
+          86400 +
+      static_cast<std::int64_t>(snapshot_.hour) * 3600 +
+      static_cast<std::int64_t>(snapshot_.minute) * 60;
+  const std::int64_t utcFloor =
+      (snapshot_.epochSeconds / 60) * 60;
+  return static_cast<std::int32_t>(localFloor - utcFloor);
 }
 
 void TimeService::printStatus() const {

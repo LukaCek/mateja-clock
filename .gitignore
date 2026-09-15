@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 alarm_output/
 include/wifi_credentials.h
+include/ntfy_credentials.h

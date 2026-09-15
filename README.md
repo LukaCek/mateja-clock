@@ -2,9 +2,9 @@
 
 Romantic bedside alarm clock and offline photo frame for the two-USB ESP32-2432S028 CYD.
 
-Phases 0 through 3 are complete. The verified platform is an ESP32-D0WD-V3 revision 3.1 with 4 MB flash, ST7789 display at 320 x 240 landscape rotation 3, calibrated resistive touch, and an 8 GB FAT32 card labeled `MATEJA_CLK`.
+Phases 0 through 4 are complete. The verified platform is an ESP32-D0WD-V3 revision 3.1 with 4 MB flash, ST7789 display at 320 x 240 landscape rotation 3, calibrated resistive touch, and an 8 GB FAT32 card labeled `MATEJA_CLK`.
 
-The clock runs an offline photo slideshow with NTP time and a fully local, persistent weekday alarm that plays a WAV file over the on-board amplified speaker.
+The clock runs an offline photo slideshow with NTP time, a fully local persistent weekday alarm that plays WAV over the speaker, and a persistent love-message inbox fed by a self-hosted ntfy server and shown as popups, a list, and full-text detail on the display.
 
 ## Photo Preparation
 
@@ -52,7 +52,22 @@ Build, upload, and monitor:
 
 The Phase 2 Home boots to a random SD photo, synchronizes Europe/Ljubljana time over NTP, and advances to a non-repeating random photo every 45 seconds. It renders a lower readability gradient while streaming each JPEG, so no full-screen framebuffer is required.
 
-Tap the right half for the next photo or the left half for the previous photo. The top-right mail control provides press feedback but stays on Home until the messages phase.
+Tap the right half for the next photo or the left half for the previous photo. The top-right mail control opens the message list.
+
+## Messages (Phase 4)
+
+For ntfy pushes, create the ignored local credentials header from the example
+and fill in your self-hosted server details:
+
+```bash
+cp include/ntfy_credentials.example.h include/ntfy_credentials.h
+```
+
+`MATEJA_NTFY_BASE_URL` is your ntfy origin (no trailing slash), `MATEJA_NTFY_INBOX_TOPIC` is the love-message topic, `MATEJA_NTFY_ACK_TOPIC` is the seen-ack topic, and `MATEJA_NTFY_ACCESS_TOKEN` is the optional Bearer token. TLS is always verified: the firmware embeds the GTS Root R4 CA that signs the certificate chain of `ntfy.cekluka.com`, and fails closed if no CA is available. A `MATEJA_NTFY_CA_CERT` macro (a raw PEM string) overrides the embedded trust anchor for other servers. The firmware also builds without this file; the device then stays inert (`host=unset`).
+
+The clock streams `GET <base>/<topic>/json?since=<lastId>` over TLS and only ingests `event=="message"` events, deduplicating by ntfy `id`. Resuming with `since=<id>` makes the stream lossless across reconnects and reboots; an HTTP 400 "invalid since" (e.g. a stale local checkpoint) automatically falls back to `since=latest`. Messages are stored newest-first in `/clock/messages/messages.json` (up to 100, oldest-READ-first pruning) and survive reboot. When a new unread message arrives while Home is idle, a 4.5-second popup appears near the bottom edge. Tap the top-right corner to open the list, then tap a row for the full text; opening the detail marks the message read and posts a "seen" acknowledgement (`POST <ackTopic>` with `X-Sequence-ID`) back to your ntfy server. Because the CYD cannot keep two TLS connections at once, the stream pauses briefly for the ack POST and resumes from `since=<id>`, and any ack still pending at boot is re-queued automatically.
+
+The alarm always outranks messages: it never shows a popup, and a ringing alarm overrides everything.
 
 ## Alarm (Phase 3)
 
@@ -75,7 +90,14 @@ Serial test commands require the `!` prefix and Enter:
 | `!x` | Test missing/corrupt JPEG and malformed-manifest recovery |
 | `!e` | Show the Slovenian photo-library error screen |
 | `!d` | Print photo, heap, SD, time, Wi-Fi, brightness, and alarm diagnostics |
-| `!m COUNT` | Set the temporary unread-message demo count |
+| `!msg` | Print message and ntfy status |
+| `!msg list` | List the stored message index |
+| `!msg unread` | Print unread/count totals |
+| `!msg read INDEX` | Mark a message read and queue its seen-ack |
+| `!msg inject <text>` | Ingest a synthetic message through the real pipeline |
+| `!msg ack` | Queue the seen-acknowledgement POST |
+| `!ntfy` | Print ntfy connection state |
+| `!ntfy reconnect` | Force a stream reconnection (replays new messages) |
 | `!b 0..255` | Set the current backlight PWM level |
 | `!v 0..100` | Set the persisted alarm volume |
 | `!alarm` | Print alarm status |
@@ -90,6 +112,6 @@ Serial test commands require the `!` prefix and Enter:
 | `!q` / `!Q` / `!s` / `!i` | Audio diagnostics: 6-stage, focused tone, sweep, WAV header scan |
 | `!h` | Print command help |
 
-Alarm and volume changes are persisted to the SD card; demo `!m` message counts and `!b` brightness are not. Measured hardware performance and milestone details are recorded in `docs/PROGRESS.md`. The original 4 MB flash backup remains at `backups/cyd_original_flash.bin` with its checksum documented in `docs/HARDWARE.md`.
+Alarm and volume, message store, and processed-id checkpoint are persisted to the SD card; demo `!b` brightness is not. Measured hardware performance and milestone details are recorded in `docs/PROGRESS.md`. The original 4 MB flash backup remains at `backups/cyd_original_flash.bin` with its checksum documented in `docs/HARDWARE.md`.
 
 The firmware targets the `huge_app.csv` partition (3 MB application, no OTA) because the audio library exceeds the default app partition.

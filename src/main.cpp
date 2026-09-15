@@ -15,17 +15,30 @@
 #include "AlarmService.h"
 #include "BrightnessService.h"
 #include "HomeScreen.h"
+#include "MessageScreens.h"
+#include "MessageService.h"
+#include "NtfyClient.h"
 #include "PhotoService.h"
 #include "StatusProviders.h"
 #include "TimeService.h"
 #include "WavUploader.h"
 #include "hardware_pins.h"
+#include "ntfy_ca_cert.h"
 
 #if __has_include("wifi_credentials.h")
 #include "wifi_credentials.h"
 #else
 #define MATEJA_WIFI_SSID ""
 #define MATEJA_WIFI_PASSWORD ""
+#endif
+
+#if __has_include("ntfy_credentials.h")
+#include "ntfy_credentials.h"
+#else
+#define MATEJA_NTFY_BASE_URL ""
+#define MATEJA_NTFY_INBOX_TOPIC ""
+#define MATEJA_NTFY_ACK_TOPIC ""
+#define MATEJA_NTFY_ACCESS_TOKEN ""
 #endif
 
 namespace {
@@ -46,7 +59,8 @@ U8G2_FOR_ADAFRUIT_GFX unicodeText;
 PhotoService photos(display, sdSpi);
 TimeService clockTime;
 BrightnessService brightness;
-DemoMessageStatusProvider messageStatus;
+MessageService messageService;
+NtfyClient ntfyClient;
 AlarmService alarmService;
 AlarmAudio alarmAudio;
 WavUploader wavUploader;
@@ -54,13 +68,26 @@ WavUploader wavUploader;
 constexpr char kWavPath[] = "/clock/audio/alarm.wav";
 uint32_t wavPendingBytes = 0;
 bool sdIsMounted = false;
-HomeScreen homeScreen(display, unicodeText, photos, clockTime, messageStatus,
+HomeScreen homeScreen(display, unicodeText, photos, clockTime, messageService,
                       alarmService);
 AlarmSettingsScreen alarmSettings(display, unicodeText);
 RingingScreen ringingScreen(display, unicodeText);
+MessagePopup messagePopup(display, unicodeText, messageService);
+MessagesListScreen messagesListScreen(display, unicodeText, messageService,
+                                      clockTime);
+MessageDetailScreen messageDetail(display, unicodeText, messageService,
+                                  clockTime);
 
-enum class ScreenMode : uint8_t { Home, AlarmSettings, Ringing };
+enum class ScreenMode : uint8_t {
+  Home,
+  AlarmSettings,
+  Ringing,
+  MessagesList,
+  MessageDetail,
+};
 ScreenMode screenMode = ScreenMode::Home;
+
+char lastPopupMessageId[messagelogic::kMaxIdBytes] = {0};
 
 bool touchIsStable = false;
 bool touchIsEligible = false;
@@ -130,6 +157,7 @@ void markPhotoChanged() { lastPhotoChangeAt = millis(); }
 
 void showHome() {
   screenMode = ScreenMode::Home;
+  messagePopup.dismiss();
   homeScreen.refresh();
   markPhotoChanged();
   Serial.printf("[SCREEN] home free_heap=%u\n", ESP.getFreeHeap());
@@ -137,11 +165,29 @@ void showHome() {
 
 void showRinging() {
   screenMode = ScreenMode::Ringing;
+  messagePopup.dismiss();
   const alarmclock::AlarmConfig& config = alarmService.config();
   ringingScreen.draw(config.hour, config.minute, config.snoozeMinutes,
                      photoStartResult == PhotoService::StartResult::kReady);
   alarmAudio.start(config.volume);
   Serial.printf("[SCREEN] ringing free_heap=%u\n", ESP.getFreeHeap());
+}
+
+void showMessagesList() {
+  screenMode = ScreenMode::MessagesList;
+  messagePopup.dismiss();
+  messagesListScreen.draw();
+  Serial.printf("[SCREEN] messages_list free_heap=%u\n", ESP.getFreeHeap());
+}
+
+void showMessageDetail(std::size_t index) {
+  screenMode = ScreenMode::MessageDetail;
+  messagePopup.dismiss();
+  messageDetail.open(index);
+  messageDetail.draw();
+  ntfyClient.requestAck();
+  Serial.printf("[SCREEN] message_detail idx=%u free_heap=%u\n",
+                static_cast<unsigned>(index), ESP.getFreeHeap());
 }
 
 void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
@@ -179,11 +225,38 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
     return;
   }
 
+  if (screenMode == ScreenMode::MessagesList) {
+    const MessagesListScreen::Action action =
+        messagesListScreen.handleTap(x, y);
+    if (action == MessagesListScreen::Action::Back) {
+      showHome();
+    } else if (action == MessagesListScreen::Action::OpenDetail) {
+      showMessageDetail(messagesListScreen.selectedIndex());
+    } else {
+      messagesListScreen.draw();
+    }
+    return;
+  }
+
+  if (screenMode == ScreenMode::MessageDetail) {
+    const MessageDetailScreen::Action action = messageDetail.handleTap(x, y);
+    if (action == MessageDetailScreen::Action::Back) {
+      showHome();
+    }
+    return;
+  }
+
+  // Home: the popup (if any) takes precedence.
+  if (messagePopup.active()) {
+    showMessageDetail(messagePopup.messageIndex());
+    return;
+  }
+
   if (x >= 260 && y <= 60) {
     Serial.printf(
-        "[INPUT] touch x=%u y=%u duration_ms=%u action=messages_future\n",
+        "[INPUT] touch x=%u y=%u duration_ms=%u action=messages\n",
         static_cast<unsigned>(x), static_cast<unsigned>(y), duration);
-    homeScreen.flashMessagesControl();
+    showMessagesList();
     return;
   }
   if (x >= 210 && y >= 155) {
@@ -266,7 +339,8 @@ void printCommands() {
   Serial.println(
       "[COMMANDS] !n !p !r photos, !t home test, !x failure test, "
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
-      "!alarm [...], !wavraw BYTES");
+      "!alarm [...], !wavraw BYTES, "
+      "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy");
 }
 
 void refreshHomeIfVisible() {
@@ -491,15 +565,92 @@ void executeCommand(const char* command) {
     }
   }
 
-  if (command[0] == 'm' && command[1] == ' ') {
-    unsigned long count = 0;
-    if (parseUnsigned(command + 2, UINT16_MAX, count)) {
-      messageStatus.setUnreadCount(static_cast<uint16_t>(count));
-      Serial.printf("[DEMO] unread=%lu\n", count);
-      homeScreen.refresh();
-    } else {
-      Serial.println("[DEMO] invalid message count");
+  if (strncmp(command, "msg", 3) == 0 &&
+      (command[3] == '\0' || command[3] == ' ')) {
+    if (command[3] == '\0') {
+      messageService.printStatus();
+      ntfyClient.printStatus();
+      return;
     }
+    if (strncmp(command + 4, "list", 4) == 0 &&
+        (command[8] == '\0' || command[8] == ' ')) {
+      messageService.printList();
+      return;
+    }
+    if (strncmp(command + 4, "unread", 6) == 0 &&
+        (command[10] == '\0' || command[10] == ' ')) {
+      const MessageStatus status = messageService.status();
+      Serial.printf("[MSGRO] unread=%u count=%u\n",
+                    static_cast<unsigned>(status.unreadCount),
+                    static_cast<unsigned>(messageService.count()));
+      return;
+    }
+    if (strncmp(command + 4, "ack", 3) == 0 &&
+        (command[7] == '\0' || command[7] == ' ')) {
+      ntfyClient.requestAck();
+      Serial.println("[MSGRO] ack queued");
+      return;
+    }
+    if (strncmp(command + 4, "read", 4) == 0 && command[8] == ' ') {
+      unsigned long index = 0;
+      if (parseUnsigned(command + 9, 100, index) &&
+          messageService.markReadAtIndex(index)) {
+        ntfyClient.requestAck();
+        Serial.printf("[MSGRO] marked index %lu read (ack queued)\n", index);
+      } else {
+        Serial.println("[MSGRO] read failed");
+      }
+      return;
+    }
+    if (strncmp(command + 4, "inject ", 7) == 0 && command[11] != '\0') {
+      // Build a synthetic ntfy JSON event and funnel it through the same
+      // ingest path the network stream uses.
+      messagelogic::InboxMessage injected;
+      char line[messagelogic::kMaxLineBytes];
+      const std::int64_t now = clockTime.snapshot().valid
+                                   ? clockTime.snapshot().epochSeconds
+                                   : 0;
+      const int written = std::snprintf(
+          line, sizeof(line),
+          "{\"id\":\"inject%lld\",\"time\":%lld,\"event\":\"message\","
+          "\"title\":\"Luka\",\"message\":\"%s\"}",
+          static_cast<long long>(now), static_cast<long long>(now),
+          command + 11);
+      if (written > 0 &&
+          messagelogic::preIngestLine(line, written, injected) ==
+              messagelogic::IngestResult::kAccepted) {
+        const MessageService::AddResult added =
+            messageService.addIncoming(injected);
+        if (added == MessageService::AddResult::kAccepted) {
+          messageService.saveProcessedId(injected.id);
+          showHome();
+          Serial.printf("[MSGRO] injected id=%s\n", injected.id);
+        } else {
+          Serial.println("[MSGRO] inject failed");
+        }
+        return;
+      }
+      Serial.println("[MSGRO] invalid inject text");
+      return;
+    }
+    Serial.println(
+        "[MSGRO_CMD] usage: !msg, !msg list, !msg unread, !msg read INDEX, "
+        "!msg ack, !msg inject <text>");
+    return;
+  }
+  if (strncmp(command, "ntfy", 4) == 0) {
+    const char* rest = command + 4;
+    if (*rest == '\0' || *rest == ' ') {
+      if (*rest == ' ' && strncmp(rest + 1, "reconnect", 9) == 0 &&
+          (rest[10] == '\0' || rest[10] == ' ')) {
+        ntfyClient.reconnectNow();
+        Serial.println("[NTFY] reconnect scheduled");
+        return;
+      }
+      ntfyClient.printStatus();
+      return;
+    }
+    Serial.println("[NTFY] usage: !ntfy, !ntfy reconnect");
     return;
   }
   if (strncmp(command, "alarm", 5) == 0) {
@@ -858,7 +1009,7 @@ void setup() {
   Serial.setRxBufferSize(8192);
   Serial.begin(kSerialBaud);
   delay(500);
-  Serial.println("\nMateja Clock - Phase 3 Local Alarm");
+  Serial.println("\nMateja Clock - Phase 4 Messages");
   Serial.printf("[BOOT] free_heap=%u\n", ESP.getFreeHeap());
 
   brightness.begin();
@@ -877,12 +1028,67 @@ void setup() {
   sdIsMounted = photoStartResult != PhotoService::StartResult::kSdUnavailable;
   const bool sdMounted = sdIsMounted;
   alarmService.begin(sdMounted);
+  messageService.begin(sdMounted);
   photos.setBottomGradient(true);
+
+  NtfyClient::Config ntfyConfig;
+  ntfyConfig.baseUrl = MATEJA_NTFY_BASE_URL;
+  ntfyConfig.inboxTopic = MATEJA_NTFY_INBOX_TOPIC;
+  ntfyConfig.ackTopic =
+      MATEJA_NTFY_ACK_TOPIC[0] != '\0' ? MATEJA_NTFY_ACK_TOPIC
+                                       : MATEJA_NTFY_INBOX_TOPIC;
+  ntfyConfig.token = MATEJA_NTFY_ACCESS_TOKEN;
+  ntfyConfig.caCert = kMATEJA_NTFY_CA_CERT;  // public GTS Root R4 trust anchor
+#ifdef MATEJA_NTFY_CA_CERT
+  if (MATEJA_NTFY_CA_CERT != nullptr && MATEJA_NTFY_CA_CERT[0] != '\0') {
+    ntfyConfig.caCert = MATEJA_NTFY_CA_CERT;  // custom CA overrides the root
+  }
+#endif
+  ntfyClient.begin(ntfyConfig, messageService);
+
   homeScreen.setPhotoStartResult(photoStartResult);
   homeScreen.showInitial();
   markPhotoChanged();
   photos.printStats();
   printCommands();
+}
+
+void updateMessagePopup() {
+  if (screenMode != ScreenMode::Home) {
+    messagePopup.dismiss();
+    return;
+  }
+  messagePopup.update();
+  if (messagePopup.active()) {
+    return;
+  }
+  // A fresh unread message on the Home screen deserves a popup.
+  const MessageStatus status = messageService.status();
+  if (status.unreadCount == 0 || messageService.count() == 0) {
+    return;
+  }
+  // The newest unread message is the first unread entry in index order
+  // (indices are newest-first).
+  std::size_t newestUnread = 0;
+  bool found = false;
+  for (std::size_t index = 0; index < messageService.count(); ++index) {
+    if (!messageService.at(index).read) {
+      newestUnread = index;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    return;
+  }
+  const MessageService::Summary& newest = messageService.at(newestUnread);
+  if (!newest.read && std::strcmp(newest.id, lastPopupMessageId) != 0) {
+    std::strncpy(lastPopupMessageId, newest.id,
+                 sizeof(lastPopupMessageId) - 1);
+    lastPopupMessageId[sizeof(lastPopupMessageId) - 1] = '\0';
+    messagePopup.show(newestUnread);
+    homeScreen.refresh();
+  }
 }
 
 void loop() {
@@ -906,6 +1112,8 @@ void loop() {
   alarmAudio.update();
 
   const bool minuteChanged = clockTime.update();
+  ntfyClient.update(clockTime.wifiConnected());
+  updateMessagePopup();
   if (alarmService.update(clockTime.snapshot())) {
     showRinging();
   }
@@ -918,6 +1126,8 @@ void loop() {
       homeScreen.randomPhoto();
     } else if (minuteChanged) {
       homeScreen.refresh();
+    } else if (messagePopup.active()) {
+      messagePopup.draw();
     }
   }
   delay(2);

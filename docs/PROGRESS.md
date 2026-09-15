@@ -95,3 +95,37 @@ Phase 2 is complete. Development stops here before messages, ntfy integration, p
 - Final firmware size: 54,692 bytes static RAM and 1,395,009 bytes flash (44.3% of the 3 MB app partition).
 
 Phase 3 is complete. Development stops here before the local messages phase; ntfy, C3 wiring, DS1302, OTA, and Immich remain out of scope.
+
+## 2026-09-14 - Phase 4 Persistent Messages + Ntfy (in progress)
+
+- Added the pure core `MessageLogic` (hand-rolled JSON stream parsing, message ingest/dedupe, history cap/prune, seen-ack id/body codecs, `since` param, preview copying without splitting UTF-8 sequences, heart normalization into a PUA token, time labels, popup verdicts) with 25 Unity cases.
+- Added `MessageService` with persistent `/clock/messages/messages.json` newest-first line-store: tmp-write, whole-file verify, `.bak` backup, atomic rename, backup recovery on boot, defaults on missing store. A RAM index of up to 100 summaries drives the badge/list/popup without re-reading SD; prune drops the oldest READ message first and refuses to evict unread ones.
+- Added `TimeService::utcOffsetSeconds()` (minute-floor civil math) so message time labels render in local time.
+- Added `NtfyClient` with two non-blocking FSMs (stream + ack). The stream FSM does a chunked-decoder `GET <base>/<topic>/json?since=latest|<lastId>` with a bounded record buffer, keepalive watchdog, exponential backoff cap 30 s, and a `reconnectNow()` for replays. Only `event=="message"` ingests; dedupe is by ntfy `id`. The ack FSM publishes `POST <base>/<ackTopic>` with the Bearer token, `X-Sequence-ID`, and a JSON body on the first pending unread.
+- Added `MessageScreens`: a 4.5-second popup pinned to the bottom edge while Home is idle (dismissed by any navigation/alarm), a scrollable list using the reserved top-right touch zone, and a full-text detail screen that marks a message read and triggers the ntfy ack.
+- Wired `main.cpp`: `ScreenMode` now includes MessagesList/MessageDetail; the popup policy shows only fresh unread on Home; alarm always outranks messages; the top-right zone opens the list; serial `!msg`/`!msg list|unread|ack`/`!msg inject <text>` and `!ntfy`/`!ntfy reconnect` replace the old `!m COUNT` demo.
+- Set `-DARDUINO_LOOP_STACK_SIZE=16384`: the inject/addIncoming/persist path (which also runs from the real stream ingest) overflowed the default loop stack (canary panic); the larger stack plus an ASCII-only serial inject fixed it.
+- Created `include/ntfy_credentials.example.h` (tracked) and gitignored `include/ntfy_credentials.h`; empty credential macros keep the device inert (`host=unset`) until a server is supplied.
+- Hardware verification on the connected CYD (SD present, 130-photo library):
+  - `!msg inject` persists; reboot restores all injected messages with correct `last_processed`.
+  - `!msg list`/`!msg`/`!msg unread` report the live index.
+  - Fixed a `last_processed=:` parse bug (off-by-17 quote scan) that dropped the id to a single colon after reboot.
+  - SD mount flakiness recurs right after crash/reset sequences but clears on the next boot (same class as Phase 3's transient).
+  - Fixed `!msg` dispatch: handler originally checked `command[1]==' '` which made `!msg` unreachable (command is `msg`, not `!msg`); switched to `strncmp(command,"msg",3)` with adjusted subcommand offsets.
+  - Added `!msg read INDEX` serial command to mark a message read and queue its ack (useful for testing without the touchscreen).
+  - Fixed stack overflow (`Stack canary watchpoint triggered (loopTask)`) from the inject/addIncoming/persist path; added `-DARDUINO_LOOP_STACK_SIZE=16384` to `platformio.ini`.
+- TLS hardening and ntfy integration:
+  - Embedded the self-signed GTS Root R4 CA certificate (`include/ntfy_ca_cert.h`) — the only trust anchor needed for ntfy.cekluka.com; validates the full chain (leaf cekluka.com → WE1 → GTS Root R4) via OpenSSL.
+  - Fail-closed: both the stream and ack TLS contexts reject connections if no CA cert is present; `setInsecure()` removed entirely. Optional `MATEJA_NTFY_CA_CERT` macro in credentials overrides the default.
+  - Fixed `since=` double-prefix bug: `makeSinceParam()` returns `since=<id>` including the prefix, but the stream request line was `?since=%s` → malformed `?since=since=<id>` → HTTP 400. Changed format to `?%s`.
+  - HTTP 400 "invalid since" now auto-resets the persisted checkpoint to empty so the next stream attempt falls back to `since=latest` (protects against poisoned/fake IDs).
+  - Ack heap fix: the ESP32-2432S028 cannot sustain two concurrent mbedTLS contexts (each needs ~32KB in/out buffers) with ~78KB fragmented free heap. The stream now pauses before the ack connect (`streamState_=kIdle`, `reconnectAtMs_=0`) and resumes with `since=<id>` after the synchronous ack POST finishes — lossless for live messages.
+  - Pre-reboot ack re-queue: on startup `NtfyClient::begin()` scans for read-but-unacked messages and re-queues any that were lost to a prior reboot.
+- Real ntfy push verified on hardware:
+  - Received a live message from the user's phone (payload: "luka testera če lahko pošlje sporočilo s telefona", id `grMv21xi005M`).
+  - `!msg read 0` → stream pauses → ack POST to `mateja-clock-seen` returns HTTP 200 (confirmed via curl) → stream resumes → `state=chunk size`.
+  - Reboot: 4 messages restored, `last_processed=XPJURRtIpyIK`, stream reconnects with `since=<lastId>`, no message loss.
+- Host tests: 59 native Unity cases (15 Home + 19 alarm + 25 message) and 21 Python tests pass.
+- Firmware: 74,408 bytes static RAM and 1,419,041 bytes flash (45.1% of the 3 MB app partition).
+
+Phase 4 is complete. Real-time push, persistence, and ack all verified end-to-end on hardware.

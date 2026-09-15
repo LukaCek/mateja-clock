@@ -22,6 +22,9 @@ class TimeService {
   bool update();
   const Snapshot& snapshot() const { return snapshot_; }
   bool wifiConnected() const;
+  // Local clock offset relative to UTC, in seconds (used for the message
+  // time labels). 0 while the time is not valid.
+  std::int32_t utcOffsetSeconds() const;
   void printStatus() const;
 
  private:

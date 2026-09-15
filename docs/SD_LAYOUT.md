@@ -60,3 +60,24 @@ The active card additionally contains:
 ```
 
 Writes go through `settings.tmp` with verification, a `.bak` backup, and rename. If the primary file is unreadable at boot the firmware tries the backup, and if neither loads it falls back to defaults without hanging the clock.
+
+## Phase 4 Addition
+
+The active card additionally contains the message store:
+
+```text
+/clock/
+  messages/
+    messages.json
+    processed.json
+```
+
+`/clock/messages/messages.json` is owned by the firmware. It stores accepted messages newest-first, one JSON object per line, capped at 100. Prune drops the oldest READ message first and never silently deletes an unread one. Writes go through `messages.tmp`, whole-file verification, a `.bak` backup, and rename (atomic commit); boot recovery prefers the `.bak` if the primary is unreadable.
+
+`/clock/messages/processed.json` records the `lastProcessedId` so a restart replays the ntfy stream from just after the last accepted message (`since=lastId`), not from `since=latest`:
+
+```json
+{"version":1,"lastProcessedId":"NTFY-message-id-example"}
+```
+
+Both files are created on first write by the firmware. A fresh card starts empty (`last_processed=(none)`); serial `!msg inject <text>` synthesizes a stream event that goes through the identical ingest/persist path as a live ntfy push.
