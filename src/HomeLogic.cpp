@@ -1,6 +1,7 @@
 #include "HomeLogic.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace home {
 namespace {
@@ -54,6 +55,19 @@ bool formatTime24(int hour, int minute, char* output, std::size_t outputSize) {
   output[4] = static_cast<char>('0' + minute % 10);
   output[5] = '\0';
   return true;
+}
+
+bool formatRingingTime(bool valid, int hour, int minute, char* output,
+                       std::size_t outputSize) {
+  clearOutput(output, outputSize);
+  if (output == nullptr || outputSize < 6) {
+    return false;
+  }
+  if (!valid) {
+    std::strcpy(output, "--:--");
+    return true;
+  }
+  return formatTime24(hour, minute, output, outputSize);
 }
 
 bool formatSlovenianDate(int tmWday, int day, int tmMon, char* output,

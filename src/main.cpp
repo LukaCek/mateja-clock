@@ -182,8 +182,9 @@ void showRinging() {
   screenMode = ScreenMode::Ringing;
   messagePopup.dismiss();
   const alarmclock::AlarmConfig& config = alarmService.config();
-  ringingScreen.draw(config.hour, config.minute, config.snoozeMinutes,
-                     photoStartResult == PhotoService::StartResult::kReady);
+  const TimeService::Snapshot& now = clockTime.snapshot();
+  ringingScreen.draw(now.valid, now.hour, now.minute, config.snoozeMinutes,
+                      photoStartResult == PhotoService::StartResult::kReady);
   alarmAudio.start(config.volume);
   Serial.printf("[SCREEN] ringing free_heap=%u\n", ESP.getFreeHeap());
 }
@@ -1269,6 +1270,10 @@ void loop() {
   updateMessagePopup();
   if (alarmService.update(clockTime.snapshot())) {
     showRinging();
+  }
+  if (screenMode == ScreenMode::Ringing) {
+    const TimeService::Snapshot& now = clockTime.snapshot();
+    ringingScreen.refreshCurrentTime(now.valid, now.hour, now.minute);
   }
   // Persist volume to SD only after it has been stable for a while.
   if (volumePersistPending && millis() - volumeChangedAtMs >= kVolumeStablePersistMs) {

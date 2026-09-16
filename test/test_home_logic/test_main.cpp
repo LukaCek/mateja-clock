@@ -85,6 +85,27 @@ void testTimeFormattingRejectsInvalidInputAndSmallBuffers() {
   TEST_ASSERT_FALSE(home::formatTime24(12, 34, nullptr, 0));
 }
 
+void testRingingTimeUsesCurrentLocalTime() {
+  char output[6];
+  // The configured alarm may be 07:00; presentation must use current 07:10.
+  TEST_ASSERT_TRUE(home::formatRingingTime(true, 7, 10, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("07:10", output);
+}
+
+void testRingingTimeRefreshesAcrossMinuteBoundary() {
+  char output[6];
+  TEST_ASSERT_TRUE(home::formatRingingTime(true, 7, 59, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("07:59", output);
+  TEST_ASSERT_TRUE(home::formatRingingTime(true, 8, 0, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("08:00", output);
+}
+
+void testRingingTimeShowsInvalidClock() {
+  char output[6];
+  TEST_ASSERT_TRUE(home::formatRingingTime(false, 0, 0, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("--:--", output);
+}
+
 void testSlovenianDateFormattingUsesUtf8() {
   char output[64];
   TEST_ASSERT_TRUE(
@@ -248,6 +269,9 @@ int main() {
   RUN_TEST(testSlovenianMonthMappings);
   RUN_TEST(testTimeFormatting);
   RUN_TEST(testTimeFormattingRejectsInvalidInputAndSmallBuffers);
+  RUN_TEST(testRingingTimeUsesCurrentLocalTime);
+  RUN_TEST(testRingingTimeRefreshesAcrossMinuteBoundary);
+  RUN_TEST(testRingingTimeShowsInvalidClock);
   RUN_TEST(testSlovenianDateFormattingUsesUtf8);
   RUN_TEST(testSlovenianDateFormattingBoundaries);
   RUN_TEST(testSlovenianDateFormattingRejectsInvalidInputAndTruncation);

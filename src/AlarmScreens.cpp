@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "HomeLogic.h"
+
 namespace {
 
 constexpr uint16_t kBackground = 0x1082;
@@ -214,7 +216,7 @@ RingingScreen::RingingScreen(Adafruit_GFX& display,
 AlarmScreenRect RingingScreen::snoozeTarget() { return {4, 148, 154, 88}; }
 AlarmScreenRect RingingScreen::stopTarget() { return {162, 148, 154, 88}; }
 
-void RingingScreen::draw(uint8_t hour, uint8_t minute,
+void RingingScreen::draw(bool timeValid, int currentHour, int currentMinute,
                          uint8_t snoozeMinutes, bool photoAvailable) {
   display_.fillScreen(photoAvailable ? 0x0841 : kBackground);
   display_.fillRect(0, 0, 320, 240, 0x0841);
@@ -222,11 +224,8 @@ void RingingScreen::draw(uint8_t hour, uint8_t minute,
   setFont(text_, u8g2_font_helvB14_te, kWarmWhite);
   centeredText(text_, u8"Dobro jutro ♥", 160, 40);
 
-  char time[6];
-  std::snprintf(time, sizeof(time), "%02u:%02u", static_cast<unsigned>(hour),
-                static_cast<unsigned>(minute));
-  setFont(text_, u8g2_font_logisoso50_tf, kWarmWhite);
-  centeredText(text_, time, 160, 126);
+  timeKnown_ = false;
+  refreshCurrentTime(timeValid, currentHour, currentMinute);
 
   const AlarmScreenRect snooze = snoozeTarget();
   const AlarmScreenRect stop = stopTarget();
@@ -239,6 +238,27 @@ void RingingScreen::draw(uint8_t hour, uint8_t minute,
   setFont(text_, u8g2_font_helvB12_te, kWarmWhite);
   centeredText(text_, snoozeLabel, snooze.x + snooze.width / 2, 202);
   centeredText(text_, u8"Ugasni", stop.x + stop.width / 2, 202);
+}
+
+void RingingScreen::refreshCurrentTime(bool timeValid, int currentHour,
+                                       int currentMinute) {
+  if (timeKnown_ && displayedTimeValid_ == timeValid &&
+      (!timeValid || (displayedHour_ == currentHour &&
+                      displayedMinute_ == currentMinute))) {
+    return;
+  }
+  // The Ringing screen has a uniform background, so this partial redraw does
+  // not require restoring photo pixels.
+  display_.fillRect(40, 55, 240, 78, 0x0841);
+  char time[6];
+  home::formatRingingTime(timeValid, currentHour, currentMinute, time,
+                          sizeof(time));
+  setFont(text_, u8g2_font_logisoso50_tf, kWarmWhite);
+  centeredText(text_, time, 160, 126);
+  timeKnown_ = true;
+  displayedTimeValid_ = timeValid;
+  displayedHour_ = currentHour;
+  displayedMinute_ = currentMinute;
 }
 
 RingingScreen::Action RingingScreen::handleTap(int16_t x, int16_t y) const {

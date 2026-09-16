@@ -42,6 +42,21 @@
   occurrence `202609161941`. Messages, Alarm Settings/X-overlay, and photo
   navigation were visually confirmed unchanged.
 
+### Follow-up: live Ringing time
+
+- The Ringing screen now receives the current local `TimeService::Snapshot`
+  time rather than the configured alarm HH:MM. Its large clock shows `--:--`
+  while time is invalid and redraws only its time region when validity or the
+  local minute changes.
+- Hardware verification set the configured alarm to 07:00 while the DS1302
+  fallback clock reported 20:35. `!alarm test` displayed 20:35 on the Ringing
+  screen, confirming the configured time is no longer used as the presentation
+  clock.
+- Ambient night blanking was intentionally not implemented: GPIO34 measured
+  raw 0 in both ordinary room conditions and fully covered darkness. A direct
+  flashlight measured raw 1021..1040, establishing higher-is-brighter polarity,
+  but there is no safe threshold separating the actual room from darkness.
+
 - Migrated the production CYD `RtcLinkService` from the old newline protocol to
   the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
   TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters

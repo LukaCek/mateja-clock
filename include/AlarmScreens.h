@@ -51,8 +51,9 @@ class RingingScreen {
 
   RingingScreen(Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& text);
 
-  void draw(uint8_t hour, uint8_t minute, uint8_t snoozeMinutes,
-            bool photoAvailable);
+  void draw(bool timeValid, int currentHour, int currentMinute,
+            uint8_t snoozeMinutes, bool photoAvailable);
+  void refreshCurrentTime(bool timeValid, int currentHour, int currentMinute);
   Action handleTap(int16_t x, int16_t y) const;
 
   static AlarmScreenRect snoozeTarget();
@@ -61,4 +62,8 @@ class RingingScreen {
  private:
   Adafruit_GFX& display_;
   U8G2_FOR_ADAFRUIT_GFX& text_;
+  bool timeKnown_ = false;
+  bool displayedTimeValid_ = false;
+  int displayedHour_ = 0;
+  int displayedMinute_ = 0;
 };

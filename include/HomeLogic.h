@@ -11,6 +11,8 @@ const char* slovenianMonth(int tmMon);
 // Formatting functions return false and leave an empty string when the input
 // is invalid or the caller-provided buffer is too small.
 bool formatTime24(int hour, int minute, char* output, std::size_t outputSize);
+bool formatRingingTime(bool valid, int hour, int minute, char* output,
+                       std::size_t outputSize);
 bool formatSlovenianDate(int tmWday, int day, int tmMon, char* output,
                          std::size_t outputSize);
 bool formatUnreadBadge(std::uint32_t unreadCount, char* output,
