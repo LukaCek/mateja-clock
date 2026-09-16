@@ -93,7 +93,7 @@ def main():
         if not os.path.isdir(local_dir):
             continue
         for fname in sorted(os.listdir(local_dir)):
-            if not fname.endswith(".png"):
+            if not fname.endswith(".raw"):
                 continue
             local_path = os.path.join(local_dir, fname)
             remote_path = f"/emoji/{size_dir}/{fname}"

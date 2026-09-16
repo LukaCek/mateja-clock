@@ -878,26 +878,18 @@ void executeCommand(const char* command) {
     return;
   }
   if (strcmp(command, "emoji") == 0) {
-    // Diagnostic: render test emojis
-    if (sdIsMounted) {
-      SD.mkdir("/emoji");
-      SD.mkdir("/emoji/32");
-      SD.mkdir("/emoji/48");
-    }
     constexpr uint16_t kBg = 0x1082;
-    constexpr uint16_t kY = 60;
-    display.fillRect(0, 48, 320, 160, kBg);
-    Serial.println("[EMOJI] test rendering...");
+    display.fillRect(0, 40, 320, 180, kBg);
     struct { const char* ch; int16_t x; } tests[] = {
-        {"❤", 10},  {"😊", 70},  {"🥰", 130},  {"😘", 190},  {"👍", 250},
+      {"❤", 10}, {"😊", 70}, {"🥰", 130}, {"😘", 190}, {"👍", 250}
     };
+    uint32_t t0 = millis();
     for (auto& t : tests) {
-      if (emojiService.draw(t.ch, t.x, kY, 48)) {
-        Serial.printf("[EMOJI] OK %s\n", t.ch);
-      }
-      yield();
+      emojiService.draw(t.ch, t.x, 50, 48);
     }
-    Serial.println("[EMOJI] test complete");
+    uint32_t t1 = millis();
+    Serial.printf("[EMOJI] 5 emojis at 48px = %u ms\n",
+                  static_cast<unsigned>(t1 - t0));
     return;
   }
   if (strncmp(command, "alarm", 5) == 0) {
