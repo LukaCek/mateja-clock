@@ -108,7 +108,7 @@ bool parseAlarmCommand(const char* command, AlarmStatus& status) {
 
   if (command[0] == 'a' && command[1] == ' ' && command[2] == 'o' &&
       command[3] == 'f' && command[4] == 'f' && command[5] == '\0') {
-    status.enabled = false;
+    status.softwareEnabled = false;
     return true;
   }
 
@@ -126,7 +126,7 @@ bool parseAlarmCommand(const char* command, AlarmStatus& status) {
   }
 
   AlarmStatus parsed = status;
-  parsed.enabled = true;
+  parsed.softwareEnabled = true;
   parsed.hour = static_cast<std::uint8_t>(hour);
   parsed.minute = static_cast<std::uint8_t>(minute);
   status = parsed;

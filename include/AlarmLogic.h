@@ -89,6 +89,7 @@ enum class AlarmSerialCommandType {
   Snooze,
   Stop,
   ResetHandledDay,
+  SetSnoozeMinutes,
 };
 
 struct AlarmSerialCommand {
@@ -98,6 +99,7 @@ struct AlarmSerialCommand {
   std::uint8_t hour;
   std::uint8_t minute;
   std::uint8_t daysMask;
+  std::uint8_t snoozeMinutes;
 };
 
 AlarmSerialCommand parseAlarmSerialCommand(const char* command);

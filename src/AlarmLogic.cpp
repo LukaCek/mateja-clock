@@ -523,6 +523,13 @@ bool AlarmEngine::update(const ClockSample& sample) {
     state_ = AlarmState::Disabled;
     snoozeDeadline_ = 0;
     explicitTestRing_ = false;
+    // A matching real occurrence while the physical gate is closed is missed,
+    // not deferred until the switch is turned on later in the same minute.
+    if (config_.softwareEnabled && validSample(sample) &&
+        (config_.daysMask & weekdayBit(sample.tmWday)) != 0 &&
+        sample.hour == config_.hour && sample.minute == config_.minute) {
+      lastHandledDayKey_ = dayKey(sample);
+    }
     return false;
   }
   if (explicitTestRing_ && state_ == AlarmState::Ringing) {
@@ -569,7 +576,8 @@ bool AlarmEngine::stop(const ClockSample& sample) {
   if (state_ != AlarmState::Ringing && state_ != AlarmState::Snoozed) {
     return false;
   }
-  if (validSample(sample)) {
+  const bool wasExplicitTestRing = explicitTestRing_;
+  if (validSample(sample) && !wasExplicitTestRing) {
     lastHandledDayKey_ = dayKey(sample);
   }
   snoozeDeadline_ = 0;
@@ -592,7 +600,8 @@ void AlarmEngine::testRing(const ClockSample&) {
 }
 
 AlarmSerialCommand::AlarmSerialCommand()
-    : type(AlarmSerialCommandType::Invalid), hour(0), minute(0), daysMask(0) {}
+    : type(AlarmSerialCommandType::Invalid), hour(0), minute(0), daysMask(0),
+      snoozeMinutes(0) {}
 
 AlarmSerialCommand parseAlarmSerialCommand(const char* command) {
   AlarmSerialCommand result;
@@ -613,6 +622,15 @@ AlarmSerialCommand parseAlarmSerialCommand(const char* command) {
     result.type = AlarmSerialCommandType::Stop;
   } else if (std::strcmp(command, "alarm reset-day") == 0) {
     result.type = AlarmSerialCommandType::ResetHandledDay;
+  } else if (std::strncmp(command, "alarm snooze-min ", 17) == 0) {
+    const char* valueBegin = command + 17;
+    int snoozeMinutes = 0;
+    if (std::strchr(valueBegin, ' ') == nullptr &&
+        parseNumber(valueBegin, command + std::strlen(command), snoozeMinutes) &&
+        snoozeMinutes >= 1 && snoozeMinutes <= 60) {
+      result.type = AlarmSerialCommandType::SetSnoozeMinutes;
+      result.snoozeMinutes = static_cast<std::uint8_t>(snoozeMinutes);
+    }
   } else if (std::strncmp(command, "alarm set ", 10) == 0) {
     const char* hourBegin = command + 10;
     const char* space = std::strchr(hourBegin, ' ');

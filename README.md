@@ -54,6 +54,30 @@ The Phase 2 Home boots to a random SD photo, synchronizes Europe/Ljubljana time 
 
 Tap the right half for the next photo or the left half for the previous photo. The top-right mail control opens the message list.
 
+## RTC Coprocessor (DS1302)
+
+The main board never bit-bangs an RTC. A tiny ESP32-C3 SuperMini owns a DS1302 (3-wire) and streams the UTC time to the CYD over a fixed UART link once per second. NTP stays the master time source when Wi-Fi is available; the coprocessor keeps the clock correct across reboots and Wi-Fi outages, so the display never shows `--:--`.
+
+Wiring (P3 header, common ground, framed binary `rtclink-common` at 115200 8N1):
+
+| C3 SuperMini | CYD (ESP32-2432S028) |
+| --- | --- |
+| GPIO21 (U0TXD) | GPIO35 (UART RX, input-only) |
+| GPIO20 (U0RXD) | GPIO22 (UART TX) |
+| GND | GND |
+
+CYD P3 GPIO21 is the backlight and is not used by the link. The old P1/UART0
+(GPIO3/GPIO1) route was rejected: the CH340 shares those nets and holds GPIO3
+HIGH whenever the CYD 5 V rail is powered. The C3 sends `SOF 0xAA | VERSION=1 |
+TYPE | LENGTH | PAYLOAD | CRC16` frames: `RTC_TIME`/`RTC_INVALID`,
+`ALARM_SWITCH_*`, `VOLUME_CHANGED`, `SNOOZE_PRESSED`; the CYD sends
+`SET_RTC_TIME`, `REQUEST_STATUS`, `PING`. C3 firmware builds, all 16 self tests,
+and the full link specification live in the separate `/home/luka/Work/ds1302-test` project (CYDTest P3 bench verification: electrical GPIO, raw UART, framed protocol, and reset recovery all passed).
+
+The CYD `RtcLinkService` runs this framed protocol on P3 (GPIO35/GPIO22 over `Serial1`), so the physical snooze button, alarm switch, volume pot, and DS1302 time all reach the main firmware without sharing the USB console UART.
+
+While NTP is unavailable the TimeService falls back to the coprocessor epoch, so Home, the alarm, and message time labels all keep working offline.
+
 ## Messages (Phase 4)
 
 For ntfy pushes, create the ignored local credentials header from the example
@@ -101,6 +125,8 @@ Serial test commands require the `!` prefix and Enter:
 | `!b 0..255` | Set the current backlight PWM level |
 | `!v 0..100` | Set the persisted alarm volume |
 | `!alarm` | Print alarm status |
+| `!rtc` | Print time source (NTP vs DS1302) and link status |
+| `!rtc sync` | Push the current NTP time to the C3 DS1302 coprocessor |
 | `!alarm on` / `!alarm off` | Enable/disable the alarm (persisted) |
 | `!alarm set HH MM` | Set the alarm time (persisted) |
 | `!alarm days LMMJCSN` | Set days, Monday-first 7 digits, at least one on |

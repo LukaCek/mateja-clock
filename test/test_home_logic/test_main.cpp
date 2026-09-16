@@ -10,9 +10,28 @@ namespace {
 
 void assertAlarmEqual(const home::AlarmStatus& expected,
                       const home::AlarmStatus& actual) {
-  TEST_ASSERT_EQUAL(expected.enabled, actual.enabled);
+  TEST_ASSERT_EQUAL(expected.softwareEnabled, actual.softwareEnabled);
   TEST_ASSERT_EQUAL_UINT8(expected.hour, actual.hour);
   TEST_ASSERT_EQUAL_UINT8(expected.minute, actual.minute);
+}
+
+void testAlarmStatusGatesAndDefaults() {
+  // Defaults: disabled + hardware allowed.
+  const home::AlarmStatus defaults;
+  TEST_ASSERT_FALSE(defaults.softwareEnabled);
+  TEST_ASSERT_TRUE(defaults.hardwareAllowed);
+  TEST_ASSERT_FALSE(defaults.ringAuthorized());
+  // The 3-arg form keeps the hardware gate open.
+  const home::AlarmStatus enabledOnly{true, 7, 45};
+  TEST_ASSERT_TRUE(enabledOnly.softwareEnabled);
+  TEST_ASSERT_TRUE(enabledOnly.hardwareAllowed);
+  TEST_ASSERT_TRUE(enabledOnly.ringAuthorized());
+
+  // 4-arg form controls both gates.
+  const home::AlarmStatus blocked{true, false, 7, 45};
+  TEST_ASSERT_TRUE(blocked.softwareEnabled);
+  TEST_ASSERT_FALSE(blocked.hardwareAllowed);
+  TEST_ASSERT_FALSE(blocked.ringAuthorized());
 }
 
 void testSlovenianWeekdayMappings() {
@@ -221,6 +240,7 @@ int main() {
   RUN_TEST(testSlovenianDateFormattingRejectsInvalidInputAndTruncation);
   RUN_TEST(testUnreadBadgeFormatting);
   RUN_TEST(testUnreadBadgeFormattingChecksBufferSize);
+  RUN_TEST(testAlarmStatusGatesAndDefaults);
   RUN_TEST(testAlarmOnParsesBoundaryTimes);
   RUN_TEST(testAlarmOffPreservesConfiguredTime);
   RUN_TEST(testAlarmParserRejectsInvalidCommandsWithoutMutation);

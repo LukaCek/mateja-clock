@@ -25,6 +25,30 @@ These onboard connections were exercised by the diagnostic on the attached ESP32
 
 The fitted display is ST7789-family. The confirmed final orientation is Adafruit GFX rotation 3 at 320 x 240.
 
-## Planned ESP32-C3 UART
+## ESP32-C3 UART link (production)
 
-No C3 wiring is assigned yet. GPIO selection will be made only after the onboard CYD connections are verified, avoiding boot-strapping pins and conflicts with the TFT, touch, SD, audio, and sensors.
+The ESP32-C3 SuperMini coprocessor (DS1302 RTC, snooze, alarm switch, volume)
+talks to the CYD over a dedicated UART on the P3 header, 115200 8N1, framed
+binary protocol (`rtclink-common`):
+
+| C3 SuperMini | CYD | P3 header |
+| --- | --- | --- |
+| GPIO21 (U0TXD) | GPIO35 (UART RX, input-only) | P3 |
+| GPIO20 (U0RXD) | GPIO22 (UART TX) | P3 |
+| GND | GND | |
+
+CYD P3 GPIO21 is the backlight and is **not** used by the link. GPIO35 is
+input-only with no internal pull; it must never be configured OUTPUT or with a
+pull in firmware, and it is not shared with the CH340 (UART0).
+
+### Rejected: P1 / UART0 / GPIO3 route
+
+Diagnosed and discarded (2026-09-16). The P1 header shares UART0 nets with the
+onboard CH340. Whenever the CYD 5 V rail is powered, the CH340 holds P1
+RX / GPIO3 HIGH no matter what the C3 drives — measured 100% HIGH
+(`docs/test1.log`, `docs/test2_full.log`) even with the CYD USB unplugged.
+Not fixable by pulls, software, or trace/CH340 modifications.
+
+See `/home/luka/Work/ds1302-test/README.md` for the full link spec and bench
+verification. The CYD side is wired on `Serial1` (GPIO35 RX / GPIO22 TX) with the
+framed binary protocol; the CH340 USB console stays on UART0 unimpeded.

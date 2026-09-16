@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include <utility>
+
 #include "MessageLogic.h"
 
 namespace {
@@ -31,10 +33,17 @@ void TimeService::begin(const char* ssid, const char* password) {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+  WiFi.onEvent([this](WiFiEvent_t event, WiFiEventInfo_t info) {
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      Serial.printf("[TIME] Wi-Fi disconnected reason=%u\n",
-                    static_cast<unsigned>(info.wifi_sta_disconnected.reason));
+      const uint32_t reason =
+          static_cast<uint32_t>(info.wifi_sta_disconnected.reason);
+      const uint32_t now = millis();
+      if (reason != lastDisconnectReason_ ||
+          now - lastDisconnectLoggedAtMs_ >= 60000) {
+        Serial.printf("[TIME] Wi-Fi disconnected reason=%u\n", reason);
+        lastDisconnectReason_ = reason;
+        lastDisconnectLoggedAtMs_ = now;
+      }
     }
   });
   startConnection();
@@ -72,8 +81,14 @@ bool TimeService::update() {
     }
   }
 
-  const time_t now = time(nullptr);
-  if (now < kMinimumValidEpoch) {
+  const time_t systemNow = time(nullptr);
+  const std::int64_t fallback =
+      fallbackProvider_ ? fallbackProvider_() : 0;
+  source_ = timesource::select(systemNow, kMinimumValidEpoch,
+                               fallback > 0, fallback);
+  const time_t now = static_cast<time_t>(
+      timesource::resolveEpoch(source_, systemNow, fallback));
+  if (source_ == timesource::Source::kInvalid) {
     if (!snapshot_.valid) {
       return false;
     }
@@ -99,9 +114,13 @@ bool TimeService::update() {
   snapshot_.weekday = localTime.tm_wday;
   snapshot_.month = localTime.tm_mon;
   displayedMinute_ = minute;
-  Serial.printf("[TIME] local=%02d:%02d day=%d weekday=%d month=%d\n",
-                snapshot_.hour, snapshot_.minute, snapshot_.day,
-                snapshot_.weekday, snapshot_.month);
+  Serial.printf(
+      "[TIME] local=%02d:%02d day=%d weekday=%d month=%d source=%s\n",
+      snapshot_.hour, snapshot_.minute, snapshot_.day, snapshot_.weekday,
+      snapshot_.month,
+      source_ == timesource::Source::kNtp ? "ntp"
+      : source_ == timesource::Source::kRtc ? "ds1302"
+                                           : "invalid");
   return true;
 }
 
@@ -125,9 +144,21 @@ std::int32_t TimeService::utcOffsetSeconds() const {
 }
 
 void TimeService::printStatus() const {
-  Serial.printf("[TIME_STATUS] wifi=%s ntp=%s valid=%s time=%02d:%02d\n",
-                wifiConnected() ? "connected" : "offline",
-                ntpConfigured_ ? "configured" : "not_configured",
-                snapshot_.valid ? "yes" : "no", snapshot_.hour,
-                snapshot_.minute);
+  Serial.printf(
+      "[TIME_STATUS] wifi=%s ntp=%s valid=%s source=%s time=%02d:%02d\n",
+      wifiConnected() ? "connected" : "offline",
+      ntpConfigured_ ? "configured" : "not_configured",
+      snapshot_.valid ? "yes" : "no",
+      source_ == timesource::Source::kNtp ? "ntp"
+      : source_ == timesource::Source::kRtc ? "ds1302"
+                                           : "none",
+      snapshot_.hour, snapshot_.minute);
+}
+
+void TimeService::setFallbackEpochProvider(EpochProvider provider) {
+  fallbackProvider_ = std::move(provider);
+}
+
+void TimeService::clearFallbackEpochProvider() {
+  fallbackProvider_ = nullptr;
 }

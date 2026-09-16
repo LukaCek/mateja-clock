@@ -1,5 +1,72 @@
 # Development Progress
 
+## 2026-09-16 - Phase 5 Complete: CYD P3 Link + Alarm Regression Fixed
+
+- Migrated the production CYD `RtcLinkService` from the old newline protocol to
+  the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
+  TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters
+  exposed by `!rtc` confirm the live C3 link (`connected=yes compat=yes`).
+- Wired the C3-derived time into `TimeService` as a fallback epoch provider so
+  Home, the alarm, and message labels keep working offline; `clock_source`
+  switches to `ds1302` when NTP is unavailable.
+- Wired the C3-derived physical inputs into `main.cpp`: alarm switch (hardware
+  gate), volume pot (live + persisted), and the snooze button (deadlock-fixed).
+- **Root-caused the Phase 5 regression where the naturally scheduled alarm no
+  longer rings** (Ringing UI never appeared, no audio despite a correct config):
+  - The persisted `handled_day` (once-per-day suppression) was being poisoned by
+    `!alarm test` followed by stop, which wrote today's dayKey as handled. The real
+    scheduled occurrence was then suppressed for the rest of the day.
+  - Secondary bug: `handlePhysicalInputs()` returned early on alarm-switch
+    transitions, so a physical snooze press could never reach the engine while
+    the switch state differed from the last known value.
+- **Fixes in `AlarmLogic`/`AlarmService`:**
+  - `stop()` intercepts and clears `explicitTestRing_` before clearing engine
+    state and **skips the handled-day write for test rings**; real rings/snoozes
+    still record the day.
+  - A hardware-blocked matching minute (switch OFF at the scheduled time) now
+    **writes `lastHandledDayKey_` as consumed**, so switching the hardware gate
+    back ON later the same day cannot replay the missed occurrence.
+  - `AlarmService::update()` persists the handled-day key whenever it *changes*
+    (not only when ringing starts), so a hardware-blocked consumption survives
+    reboot.
+  - `handlePhysicalInputs()` restructured: the early-return guard now wraps only
+    the switch-processing block; `consumeSnoozePressed()` always runs, so the
+    physical snooze button can never deadlock against a switch event.
+  - Added `[ALARM_EVAL]` diagnostics (only on state/gate/handled/minute changes)
+    with a per-evaluation reason (`scheduled`, `snooze`, `blocked_by_hardware`,
+    `blocked_by_handled_day`, `blocked_by_software`, `wrong_weekday`, and
+    `wrong_minute`), plus
+    `occurrence=handled` when a hardware-blocked minute is consumed.
+- Added `!alarm snooze-min N` (1..60) as a diagnostic command via `applyConfig`;
+  the production `snoozeMinutes` default stays 10.
+- Throttled `[TIME] Wi-Fi disconnected reason=` logging (same-reason repeats are
+  suppressed for 60 s) to keep offline rollover quiet.
+- **86/86 native tests pass** (test_home_logic 16, test_alarm_logic 41,
+  test_message_logic 8, test_rtc_link 21). New regression tests prove:
+  - a real stop marks the day handled, but a test-ring stop does not;
+  - an explicit test ring (and a snoozed test ring) does not consume the later
+    scheduled occurrence;
+  - a hardware-blocked scheduled minute is consumed and never replays;
+  - the alarm fires exactly once across the whole matching wall-clock minute.
+- **All mandatory hardware tests passed on the connected CYD:**
+  1. NTP natural ring: 15:35 `action=RING reason=scheduled`, WAV, Ringing UI.
+  2. Physical snooze: button, `[INPUT] button snooze`, Home, then 60 s later
+     `action=RERING reason=snooze`, WAV restarted, Ringing UI.
+  3. Stop via touchscreen: quiet Home, `state=armed`, `handled_day` persisted,
+     no replay.
+  4. Hardware switch OFF during ring: `[INPUT] switch=off alarms_blocked`,
+     alarm stopped, `action=BLOCK reason=blocked_by_hardware occurrence=handled`;
+     hardware switch ON, `blocked_by_handled_day`, **no replay**.
+  5. Offline RTC ring: Wi-Fi off, `clock_source=ds1302`, 16:17
+     `action=RING reason=scheduled`, WAV, Ringing UI.
+  - Regression sweep: slideshow, minute refresh, X-overlay (X when switch OFF,
+    none when ON), alarm settings read/save, C3 volume knob 20 to 100 to 70, message
+    list + detail, snooze/dismiss buttons on Home (no deadlock), C3 link healthy.
+- Final firmware: flash fits the 3 MB app partition.
+
+Phase 5 is complete. The framed P3 link is production on both boards and the alarm
+regression that blocked it is fixed, tested, and verified on real hardware.
+
 ## 2026-09-14 - Phase 0 Started
 
 - Identified the attached CH340 serial adapter at `/dev/ttyUSB0` with a stable by-id path.
@@ -129,3 +196,24 @@ Phase 3 is complete. Development stops here before the local messages phase; ntf
 - Firmware: 74,408 bytes static RAM and 1,419,041 bytes flash (45.1% of the 3 MB app partition).
 
 Phase 4 is complete. Real-time push, persistence, and ack all verified end-to-end on hardware.
+
+## 2026-09-16 - Phase 5 C3 Coprocessor + P3 Link Verified
+
+- Reworked the C3 (ESP32-C3 SuperMini) from the throwaway `ds1302-test` probe into the production coprocessor firmware:
+  - Dedicated link UART0 on GPIO20 RX / GPIO21 TX (framed binary `rtclink-common` 115200 8N1), entirely separate from the USB CDC debug console; debug text never shares the protocol UART.
+  - DS1302 RTC stored as UTC, GPIO4/5/6, verified `RTC_TIME`/`RTC_INVALID`/`SET_RTC_TIME` read-back; snooze button, alarm switch and volume pot blown through debounced, deadband-filtered frames; always-on poll loop (no light sleep).
+  - Boot now reports physical state immediately (`RTC_TIME`/`RTC_INVALID`, `ALARM_SWITCH_*`, `VOLUME_CHANGED`) instead of waiting for input changes; volume de-duplicated so the boot value is not re-sent by the loop.
+- Diagnosed and **rejected** the original P1 / UART0 / GPIO3 route: the CH340 shares those nets and holds GPIO3 HIGH the moment the CYD 5 V rail is powered. Evidence kept in `ds1302-test/docs/` (`test1.log`, `test2_full.log`, `forward*.log`, `passive.log`, `probe2.log`, `wireprobe.log`).
+- Adopted the P3 route: CYD GPIO35 RX (input-only) <- C3 GPIO21 TX; C3 GPIO20 RX <- CYD GPIO22 TX; CYD GPIO21 (backlight) left untouched; dev boards each USB-powered with the inter-board 5 V jumper disconnected.
+- Produced `CYDTest`, a temporary P3 peer on the CYD that keeps USB UART0 for diagnostics. Verified on hardware in order:
+  1. Electrical GPIO both directions (asynchronous 250/500 ms drivers, 5 ms samplers, 46 s): GPIO35 and GPIO20 tracked their drivers 1:1, no flapping.
+  2. Raw UART at line rate with direction-distinct byte rings: CYD 0 bad (~298 k RX), C3 1 initial phase-lock byte then 0 bad (~1.1 M RX).
+  3. rtclink framed loop ~245 s: 0 CRC errors, 0 unknown/version/too-long frames, 0 timeouts, 0 unexpected; `SET_RTC_TIME` accept + read-back verified on the DS1302, out-of-range epochs rejected.
+  4. Reset recovery both directions: C3 reset re-sent `RTC_TIME`+`ALARM_SWITCH_*`+`VOLUME_CHANGED` and resumed (0 errors); CYD reset re-initialised the handshake and resumed (0 errors).
+- Expanded C3 host tests to 16 cases (debounce, volume EMA/deadband, startup-state, RTC policy) and `rtclink-common` tests to 13; all green.
+- Firmware restored on the C3 as `c3_rtc` and boot-verified (`[C3] boot protocol=1`, `uart tx=21 rx=20`, rtc switch volume ready).
+
+Remaining Phase 5 work: migrate the production CYD `RtcLinkService` from the old
+newline protocol on P1/`GPIO3`/`GPIO1` to the framed `rtclink-common` protocol on
+P3/GPIO35/GPIO22, integrate with TimeService/AlarmService, then final hardware
+regression and enclosure single-5V re-test.

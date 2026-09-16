@@ -19,6 +19,7 @@
 #include "MessageService.h"
 #include "NtfyClient.h"
 #include "PhotoService.h"
+#include "RtcLinkService.h"
 #include "StatusProviders.h"
 #include "TimeService.h"
 #include "WavUploader.h"
@@ -50,6 +51,8 @@ constexpr uint32_t kMinimumTapMs = 60;
 constexpr uint32_t kMaximumTapMs = 800;
 constexpr uint32_t kTouchCooldownMs = 250;
 constexpr uint32_t kSlideshowIntervalMs = 45000;
+// Volume must stay unchanged this long before it is persisted to the SD card.
+constexpr uint32_t kVolumeStablePersistMs = 3000;
 
 SPIClass displaySpi(HSPI);
 SPIClass sdSpi(VSPI);
@@ -63,6 +66,7 @@ MessageService messageService;
 NtfyClient ntfyClient;
 AlarmService alarmService;
 AlarmAudio alarmAudio;
+RtcLinkService rtcLink;
 WavUploader wavUploader;
 
 constexpr char kWavPath[] = "/clock/audio/alarm.wav";
@@ -86,6 +90,17 @@ enum class ScreenMode : uint8_t {
   MessageDetail,
 };
 ScreenMode screenMode = ScreenMode::Home;
+
+// Physical controls on the C3 coprocessor (pot/button/switch over the framed
+// UART link). Tracked across loop() so we react to edges rather than levels.
+// Volume is applied live on every change and persisted only after it has been
+// stable for a while; the switch drives the hardware gate (never the stored
+// config), and the button snoozes/dismisses.
+uint8_t lastVolume = 0xFF;  // 0xFF == unknown yet
+bool volumePersistPending = false;
+uint32_t volumeChangedAtMs = 0;
+bool lastSwitchOn = false;
+bool switchKnown = false;
 
 char lastPopupMessageId[messagelogic::kMaxIdBytes] = {0};
 
@@ -264,6 +279,7 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
         "[INPUT] touch x=%u y=%u duration_ms=%u action=alarm_settings\n",
         static_cast<unsigned>(x), static_cast<unsigned>(y), duration);
     alarmSettings.beginEdit(alarmService.config());
+    alarmSettings.setHardwareAllowed(alarmService.hardwareAllowed());
     screenMode = ScreenMode::AlarmSettings;
     alarmSettings.draw();
     Serial.printf("[SCREEN] alarm_settings free_heap=%u\n", ESP.getFreeHeap());
@@ -320,6 +336,66 @@ void handleTouch() {
   handleTap(touchDownX, touchDownY, duration);
 }
 
+// Reacts to the physical controls on the C3 coprocessor (pot, button, switch)
+// as framed frames arrive over the RTC link. Volume applies live and persists
+// only after stability; the switch toggles the hardware gate (never the stored
+// config); the button snoozes a ringing alarm and otherwise dismisses to home.
+void handlePhysicalInputs() {
+  if (rtcLink.volumeKnown()) {
+    const uint8_t volume = rtcLink.volumePercent();
+    if (volume != lastVolume) {
+      lastVolume = volume;
+      alarmAudio.setVolume(volume);
+      volumeChangedAtMs = millis();
+      volumePersistPending = true;
+      Serial.printf("[INPUT] volume=%u\n", static_cast<unsigned>(volume));
+    }
+  }
+
+  if (rtcLink.alarmSwitchKnown()) {
+    const bool on = rtcLink.alarmSwitchOn();
+    if (!switchKnown || on != lastSwitchOn) {
+      switchKnown = true;
+      lastSwitchOn = on;
+      if (!on) {
+        // Switch OFF: first resolve the current occurrence while the gate still
+        // allows stop() to run, stop audio and return to Home, then close the
+        // physical gate. Never touch the stored config (time/days/enable).
+        if (screenMode == ScreenMode::Ringing) {
+          alarmService.stop(clockTime.snapshot());
+          alarmAudio.stop();
+          showHome();
+        }
+        alarmService.setHardwareAllowed(false);
+        Serial.println("[INPUT] switch=off alarms_blocked");
+      } else {
+        alarmService.setHardwareAllowed(true);
+        Serial.println("[INPUT] switch=on alarms_allowed");
+      }
+      // Give the physical switch immediate visual feedback on the active screen.
+      if (screenMode == ScreenMode::Home) {
+        homeScreen.refreshAlarm();
+      } else if (screenMode == ScreenMode::AlarmSettings) {
+        alarmSettings.setHardwareAllowed(alarmService.hardwareAllowed());
+      }
+    }
+  }
+
+  const std::uint32_t snoozeCount = rtcLink.consumeSnoozePressed();
+  for (std::uint32_t index = 0; index < snoozeCount; ++index) {
+    if (screenMode == ScreenMode::Ringing) {
+      if (alarmService.snooze(clockTime.snapshot())) {
+        alarmAudio.stop();
+        showHome();
+        Serial.println("[INPUT] button snooze");
+      }
+    } else {
+      showHome();
+      Serial.println("[INPUT] button dismiss");
+    }
+  }
+}
+
 bool parseUnsigned(const char* value, unsigned long maximum,
                    unsigned long& parsed) {
   if (value == nullptr || value[0] == '\0') {
@@ -340,7 +416,8 @@ void printCommands() {
       "[COMMANDS] !n !p !r photos, !t home test, !x failure test, "
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
-      "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy");
+      "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy, !rtc [sync], "
+      "!c3, !c3 ping");
 }
 
 void refreshHomeIfVisible() {
@@ -434,6 +511,9 @@ void executeAlarmCommand(const char* command) {
       break;
     case alarmclock::AlarmSerialCommandType::SetDays:
       saved = alarmService.setDays(parsed.daysMask);
+      break;
+    case alarmclock::AlarmSerialCommandType::SetSnoozeMinutes:
+      saved = alarmService.setSnoozeMinutes(parsed.snoozeMinutes);
       break;
     case alarmclock::AlarmSerialCommandType::Test:
       alarmService.testRing(clockTime.snapshot());
@@ -651,6 +731,50 @@ void executeCommand(const char* command) {
       return;
     }
     Serial.println("[NTFY] usage: !ntfy, !ntfy reconnect");
+    return;
+  }
+  if (strncmp(command, "c3", 2) == 0) {
+    const char* rest = command + 2;
+    if (*rest == ' ' && strncmp(rest + 1, "ping", 4) == 0 &&
+        (rest[5] == '\0' || rest[5] == ' ')) {
+      rtcLink.requestStatus();
+      Serial.println("[C3] status request queued");
+      return;
+    }
+    Serial.printf(
+        "[C3] link=%s compat=%s rtc=%s epoch=%u switch=%s volume=%s "
+        "last_seen_ms=%lld\n",
+        rtcLink.connected() ? "connected" : "down",
+        rtcLink.protocolCompatible() ? "yes" : "no",
+        rtcLink.rtcValid() ? "yes" : "no",
+        static_cast<unsigned>(rtcLink.rtcEpoch()),
+        rtcLink.alarmSwitchKnown()
+            ? (rtcLink.alarmSwitchOn() ? "on" : "off")
+            : "none",
+        rtcLink.volumeKnown() ? "yes" : "no",
+        static_cast<long long>(rtcLink.lastSeenMs()));
+    return;
+  }
+  if (strncmp(command, "rtc", 3) == 0) {
+    const char* rest = command + 3;
+    if (*rest == ' ' && strncmp(rest + 1, "sync", 4) == 0 &&
+        (rest[5] == '\0' || rest[5] == ' ')) {
+      if (!clockTime.snapshot().valid) {
+        Serial.println("[RTC] no trusted time to sync yet");
+      } else {
+        rtcLink.forceSync(clockTime.snapshot().epochSeconds);
+        Serial.println("[RTC] sync queued");
+      }
+      return;
+    }
+    clockTime.printStatus();
+    rtcLink.printStatus();
+    Serial.printf("[RTC] clock_source=%s\n",
+                  clockTime.source() == timesource::Source::kNtp
+                      ? "ntp"
+                      : clockTime.source() == timesource::Source::kRtc
+                            ? "ds1302"
+                            : "none");
     return;
   }
   if (strncmp(command, "alarm", 5) == 0) {
@@ -1024,6 +1148,10 @@ void setup() {
   drawLoadingScreen();
 
   clockTime.begin(MATEJA_WIFI_SSID, MATEJA_WIFI_PASSWORD);
+  rtcLink.begin(Serial1);
+  clockTime.setFallbackEpochProvider([]() -> std::int64_t {
+    return rtcLink.rtcValid() ? rtcLink.rtcEpoch() : 0;
+  });
   photoStartResult = photos.begin();
   sdIsMounted = photoStartResult != PhotoService::StartResult::kSdUnavailable;
   const bool sdMounted = sdIsMounted;
@@ -1107,15 +1235,28 @@ void loop() {
   }
 
   handleSerial();
+  rtcLink.update();
+  handlePhysicalInputs();
   handleTouch();
   brightness.update();
   alarmAudio.update();
 
   const bool minuteChanged = clockTime.update();
   ntfyClient.update(clockTime.wifiConnected());
+  // Keep the DS1302 coprocessor in sync while NTP is authoritative, so the
+  // clock stays accurate offline too.
+  if (clockTime.source() == timesource::Source::kNtp &&
+      clockTime.snapshot().valid) {
+    rtcLink.synchronize(clockTime.snapshot().epochSeconds);
+  }
   updateMessagePopup();
   if (alarmService.update(clockTime.snapshot())) {
     showRinging();
+  }
+  // Persist volume to SD only after it has been stable for a while.
+  if (volumePersistPending && millis() - volumeChangedAtMs >= kVolumeStablePersistMs) {
+    volumePersistPending = false;
+    alarmService.setVolume(lastVolume);
   }
 
   const uint32_t now = millis();

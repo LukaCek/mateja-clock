@@ -22,6 +22,7 @@ class HomeScreen {
   bool previousPhoto();
   bool randomPhoto();
   void showLibraryError();
+  void refreshAlarm();
   void flashMessagesControl();
   void flashAlarmControl();
   uint32_t lastRenderMs() const { return lastRenderMs_; }

@@ -26,6 +26,7 @@ class AlarmSettingsScreen {
   const alarmclock::AlarmConfig& editConfig() const;
   alarmclock::AlarmConfig& editConfig();
   void setSaveError(bool error);
+  void setHardwareAllowed(bool allowed);
 
   static AlarmScreenRect backTarget();
   static AlarmScreenRect enabledTarget();
@@ -41,6 +42,7 @@ class AlarmSettingsScreen {
   U8G2_FOR_ADAFRUIT_GFX& text_;
   alarmclock::AlarmConfig edit_;
   bool saveError_;
+  bool hardwareAllowed_;
 };
 
 class RingingScreen {

@@ -16,15 +16,36 @@ bool formatSlovenianDate(int tmWday, int day, int tmMon, char* output,
 bool formatUnreadBadge(std::uint32_t unreadCount, char* output,
                        std::size_t outputSize);
 
+// Describes the alarm state shown on the Home screen. `softwareEnabled` comes
+// from the alarm settings; `hardwareAllowed` reflects the physical C3 alarm
+// switch (when false, ringing is blocked regardless of the software setting).
 struct AlarmStatus {
-  constexpr AlarmStatus(bool enabledValue = false,
-                        std::uint8_t hourValue = 0,
-                        std::uint8_t minuteValue = 0)
-      : enabled(enabledValue), hour(hourValue), minute(minuteValue) {}
+  // 4-arg ctor: all fields explicit.
+  constexpr AlarmStatus(bool softwareEnabledValue, bool hardwareAllowedValue,
+                        std::uint8_t hourValue, std::uint8_t minuteValue)
+      : softwareEnabled(softwareEnabledValue),
+        hardwareAllowed(hardwareAllowedValue),
+        hour(hourValue),
+        minute(minuteValue) {}
 
-  bool enabled;
+  // 3-arg ctor for legacy/test convenience: defaults hardwareAllowed to true.
+  constexpr AlarmStatus(bool softwareEnabledValue, std::uint8_t hourValue,
+                        std::uint8_t minuteValue)
+      : AlarmStatus(softwareEnabledValue, true, hourValue, minuteValue) {}
+
+  // Default: disabled + hardware allowed.
+  constexpr AlarmStatus()
+      : AlarmStatus(false, true, 0, 0) {}
+
+  bool softwareEnabled;
+  bool hardwareAllowed;
   std::uint8_t hour;
   std::uint8_t minute;
+
+  // The alarm is allowed to ring right now (both gates open).
+  constexpr bool ringAuthorized() const {
+    return softwareEnabled && hardwareAllowed;
+  }
 };
 
 // Accepts only "a off" and "a on HH MM" with two decimal digits per field.

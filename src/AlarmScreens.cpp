@@ -11,8 +11,21 @@ constexpr uint16_t kWarmWhite = 0xFF7B;
 constexpr uint16_t kMuted = 0xAD55;
 constexpr uint16_t kCoral = 0xEBAC;
 constexpr uint16_t kCoralDark = 0xA9E8;
-constexpr uint16_t kGreen = 0x56EA;
 constexpr uint16_t kError = 0xF986;
+
+// Draws a bold, high-contrast X centered over the given rect. Used to mark a
+// control as physically disabled (hardware gate closed).
+void drawDisabledX(Adafruit_GFX& display, const AlarmScreenRect& rect) {
+  constexpr int16_t kThickness = 3;
+  const int16_t left = rect.x + 9;
+  const int16_t right = rect.x + rect.width - 9;
+  const int16_t top = rect.y + 9;
+  const int16_t bottom = rect.y + rect.height - 9;
+  for (int16_t offset = 0; offset < kThickness; ++offset) {
+    display.drawLine(left, top + offset, right, bottom + offset, kBackground);
+    display.drawLine(left, bottom - offset, right, top - offset, kBackground);
+  }
+}
 
 void setFont(U8G2_FOR_ADAFRUIT_GFX& text, const uint8_t* font,
              uint16_t color) {
@@ -48,7 +61,11 @@ bool AlarmScreenRect::contains(int16_t pointX, int16_t pointY) const {
 
 AlarmSettingsScreen::AlarmSettingsScreen(
     Adafruit_GFX& display, U8G2_FOR_ADAFRUIT_GFX& text)
-    : display_(display), text_(text), edit_(), saveError_(false) {}
+    : display_(display),
+      text_(text),
+      edit_(),
+      saveError_(false),
+      hardwareAllowed_(true) {}
 
 void AlarmSettingsScreen::beginEdit(const alarmclock::AlarmConfig& config) {
   edit_ = config;
@@ -62,6 +79,12 @@ const alarmclock::AlarmConfig& AlarmSettingsScreen::editConfig() const {
 alarmclock::AlarmConfig& AlarmSettingsScreen::editConfig() { return edit_; }
 
 void AlarmSettingsScreen::setSaveError(bool error) { saveError_ = error; }
+
+void AlarmSettingsScreen::setHardwareAllowed(bool allowed) {
+  if (hardwareAllowed_ == allowed) return;
+  hardwareAllowed_ = allowed;
+  draw();
+}
 
 AlarmScreenRect AlarmSettingsScreen::backTarget() { return {0, 0, 48, 44}; }
 AlarmScreenRect AlarmSettingsScreen::enabledTarget() {
@@ -96,9 +119,12 @@ void AlarmSettingsScreen::draw() {
 
   const AlarmScreenRect toggle = enabledTarget();
   display_.fillRoundRect(toggle.x, toggle.y, toggle.width, toggle.height, 16,
-                         edit_.softwareEnabled ? kGreen : kPanelRaised);
+                         edit_.softwareEnabled ? kCoral : kPanelRaised);
   display_.fillCircle(edit_.softwareEnabled ? toggle.x + 48 : toggle.x + 16,
                       toggle.y + 16, 12, kWarmWhite);
+  if (!hardwareAllowed_) {
+    drawDisabledX(display_, toggle);
+  }
 
   setFont(text_, u8g2_font_6x12_te, kMuted);
   text_.drawUTF8(18, 65, u8"URA");

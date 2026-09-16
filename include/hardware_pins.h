@@ -27,4 +27,14 @@ constexpr gpio_num_t kBacklight = GPIO_NUM_21;
 constexpr gpio_num_t kLightSensor = GPIO_NUM_34;
 constexpr gpio_num_t kAudio = GPIO_NUM_26;
 
+// UART link to the ESP32-C3 DS1302 RTC coprocessor, on the P3 header
+// (115200 8N1, framed binary rtclink-common protocol). GPIO35 is input-only
+// (C3 TX provides the idle-high level); never configure it OUTPUT or with a
+// pull. This is a dedicated UART (Serial1), fully independent of the CH340
+// console. The old P1/UART0 route (GPIO3/GPIO1) is rejected: the CH340 holds
+// GPIO3 HIGH the moment the CYD 5V rail is powered.
+constexpr gpio_num_t kRtcUartRx = GPIO_NUM_35;  // <- C3 GPIO21 (TXD)
+constexpr gpio_num_t kRtcUartTx = GPIO_NUM_22;  // -> C3 GPIO20 (RXD)
+constexpr uint32_t kRtcUartBaud = 115200;
+
 }  // namespace pins

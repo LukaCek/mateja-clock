@@ -36,11 +36,38 @@ const char* stateName(alarmclock::AlarmState state) {
   return "unknown";
 }
 
+const char* evaluationReason(const TimeService::Snapshot& snapshot,
+                             const alarmclock::AlarmConfig& config,
+                             bool hardwareAllowed,
+                             alarmclock::AlarmState state,
+                             int32_t handledDayKey) {
+  if (!snapshot.valid || snapshot.yearDay < 0 || snapshot.yearDay > 365 ||
+      snapshot.weekday < 0 || snapshot.weekday > 6 || snapshot.hour < 0 ||
+      snapshot.hour > 23 || snapshot.minute < 0 || snapshot.minute > 59) {
+    return "now_invalid";
+  }
+  if (!config.softwareEnabled) return "blocked_by_software";
+  if ((config.daysMask & (1U << ((snapshot.weekday + 6) % 7))) == 0) {
+    return "wrong_weekday";
+  }
+  if (snapshot.hour != config.hour || snapshot.minute != config.minute) {
+    return "wrong_minute";
+  }
+  if (!hardwareAllowed) return "blocked_by_hardware";
+  const int32_t dayKey = snapshot.year * 366 + snapshot.yearDay;
+  if (dayKey == handledDayKey) return "blocked_by_handled_day";
+  if (state == alarmclock::AlarmState::Snoozed) return "snoozed";
+  if (state == alarmclock::AlarmState::Ringing) return "ringing";
+  return "eligible";
+}
+
 }
 
 void AlarmService::begin(bool sdMounted) {
   sdMounted_ = sdMounted;
   invalidTimeLogged_ = false;
+  evalStateKnown_ = false;
+  lastEvalMinuteKey_ = -1;
 
   alarmclock::AlarmConfig loadedConfig;
   int32_t loadedDayKey = std::numeric_limits<int32_t>::min();
@@ -78,8 +105,8 @@ alarmclock::AlarmState AlarmService::state() const { return engine_.state(); }
 
 home::AlarmStatus AlarmService::status() const {
   const alarmclock::AlarmConfig& current = engine_.config();
-  return home::AlarmStatus(current.softwareEnabled, current.hour,
-                           current.minute);
+  return home::AlarmStatus(current.softwareEnabled, engine_.hardwareAllowed(),
+                           current.hour, current.minute);
 }
 
 alarmclock::ClockSample AlarmService::clockSample(
@@ -114,11 +141,68 @@ bool AlarmService::update(const TimeService::Snapshot& snapshot) {
   const int32_t previousDayKey = engine_.lastHandledDayKey();
   engine_.update(clockSample(snapshot));
   const bool startedRinging = previous != alarmclock::AlarmState::Ringing &&
-                              engine_.state() == alarmclock::AlarmState::Ringing;
-  if (startedRinging && engine_.lastHandledDayKey() != previousDayKey &&
-      !persistHandledDayKey()) {
+                               engine_.state() == alarmclock::AlarmState::Ringing;
+  const bool handledDayChanged = engine_.lastHandledDayKey() != previousDayKey;
+  if (handledDayChanged &&
+       !persistHandledDayKey()) {
     Serial.println("[ALARM] handled day persistence failed");
   }
+
+  const alarmclock::AlarmConfig& config = engine_.config();
+  const bool hardwareAllowed = engine_.hardwareAllowed();
+  const int64_t minuteKey =
+      static_cast<int64_t>(snapshot.year) * 1000000LL +
+      static_cast<int64_t>(snapshot.yearDay) * 1440LL +
+      static_cast<int64_t>(snapshot.hour) * 60 + snapshot.minute;
+  int distance = config.hour * 60 + config.minute -
+                 (snapshot.hour * 60 + snapshot.minute);
+  if (distance < 0) distance = -distance;
+  if (distance > 720) distance = 1440 - distance;
+  const bool nearScheduledMinute = timeValid && distance <= 2;
+  const bool stateChanged = !evalStateKnown_ || engine_.state() != lastEvalState_;
+  const bool gateChanged = !evalStateKnown_ ||
+                           hardwareAllowed != lastEvalHardwareAllowed_;
+  const bool handledChanged = !evalStateKnown_ ||
+                              engine_.lastHandledDayKey() != lastEvalHandledDayKey_;
+  const bool minuteChanged = minuteKey != lastEvalMinuteKey_;
+  if ((nearScheduledMinute && minuteChanged) || stateChanged || gateChanged ||
+      handledChanged) {
+    const int32_t dayKey = snapshot.year * 366 + snapshot.yearDay;
+    const bool snoozeRering = startedRinging &&
+                              previous == alarmclock::AlarmState::Snoozed;
+    const char* action = startedRinging ? (snoozeRering ? "RERING" : "RING")
+                                        : "BLOCK";
+    const char* reason = startedRinging ? (snoozeRering ? "snooze" : "scheduled")
+                                        : evaluationReason(
+                                              snapshot, config, hardwareAllowed,
+                                              engine_.state(),
+                                              engine_.lastHandledDayKey());
+    Serial.printf(
+        "[ALARM_EVAL] epoch=%lld local=%04d-%03d %02d:%02d wd=%d "
+        "cfg=%02u:%02u days=%u sw=%u hw=%u eff=%u state=%s day=%ld "
+        "handled=%ld snooze=%lld eligible=%u action=%s reason=%s%s\n",
+        static_cast<long long>(snapshot.epochSeconds), snapshot.year,
+        snapshot.yearDay, snapshot.hour, snapshot.minute, snapshot.weekday,
+        static_cast<unsigned>(config.hour), static_cast<unsigned>(config.minute),
+        static_cast<unsigned>(config.daysMask), config.softwareEnabled ? 1U : 0U,
+        hardwareAllowed ? 1U : 0U,
+        config.softwareEnabled && hardwareAllowed ? 1U : 0U,
+        stateName(engine_.state()), static_cast<long>(dayKey),
+        static_cast<long>(engine_.lastHandledDayKey()),
+        static_cast<long long>(engine_.snoozeDeadline()),
+        (startedRinging || std::strcmp(reason, "eligible") == 0) ? 1U : 0U,
+        action, reason,
+        !hardwareAllowed && timeValid && config.softwareEnabled &&
+                (config.daysMask & (1U << ((snapshot.weekday + 6) % 7))) != 0 &&
+                snapshot.hour == config.hour && snapshot.minute == config.minute
+            ? " occurrence=handled"
+            : "");
+  }
+  lastEvalMinuteKey_ = minuteKey;
+  lastEvalState_ = engine_.state();
+  lastEvalHardwareAllowed_ = hardwareAllowed;
+  lastEvalHandledDayKey_ = engine_.lastHandledDayKey();
+  evalStateKnown_ = true;
   return startedRinging;
 }
 
@@ -151,6 +235,12 @@ bool AlarmService::setDays(uint8_t daysMask) {
   return applyConfig(next);
 }
 
+bool AlarmService::setSnoozeMinutes(uint8_t snoozeMinutes) {
+  alarmclock::AlarmConfig next = engine_.config();
+  next.snoozeMinutes = snoozeMinutes;
+  return applyConfig(next);
+}
+
 bool AlarmService::setVolume(uint8_t volume) {
   alarmclock::AlarmConfig next = engine_.config();
   next.volume = volume;
@@ -177,6 +267,10 @@ bool AlarmService::stop(const TimeService::Snapshot& snapshot) {
 
 void AlarmService::setHardwareAllowed(bool allowed) {
   engine_.setHardwareAllowed(allowed);
+}
+
+bool AlarmService::hardwareAllowed() const {
+  return engine_.hardwareAllowed();
 }
 
 bool AlarmService::resetHandledDay() {

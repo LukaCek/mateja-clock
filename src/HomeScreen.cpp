@@ -150,16 +150,25 @@ void HomeScreen::drawMessages(bool pressed) {
                  badge);
 }
 
+void HomeScreen::refreshAlarm() {
+  drawAlarm();
+}
+
 void HomeScreen::drawAlarm(bool pressed) {
   const home::AlarmStatus status = alarm_.status();
-  const uint16_t accent = pressed ? kPressed : (status.enabled ? kCoral : kMuted);
-  if (status.enabled) {
+  const bool configured = status.softwareEnabled;
+  const bool hardwareBlocked = configured && !status.hardwareAllowed;
+  // A configured-but-hardware-blocked alarm renders muted; a fully armed
+  // alarm uses the coral accent.
+  const uint16_t accent =
+      pressed ? kPressed : (configured && !hardwareBlocked ? kCoral : kMuted);
+  if (configured) {
     char alarmTime[6];
     home::formatTime24(status.hour, status.minute, alarmTime,
                        sizeof(alarmTime));
     text_.setFont(u8g2_font_6x12_tf);
     text_.setFontMode(1);
-    text_.setForegroundColor(kWarmWhite);
+    text_.setForegroundColor(hardwareBlocked ? kMuted : kWarmWhite);
     text_.drawUTF8(243, 229, alarmTime);
   }
 
