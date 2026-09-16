@@ -101,6 +101,12 @@ bool formatUnreadBadge(std::uint32_t unreadCount, char* output,
   return true;
 }
 
+bool snoozeIndicatorVisible(bool snoozed) { return snoozed; }
+
+bool isSnoozeIndicatorTouch(std::uint16_t x, std::uint16_t y, bool snoozed) {
+  return snoozed && x >= 258 && x <= 311 && y >= 104 && y <= 135;
+}
+
 bool parseAlarmCommand(const char* command, AlarmStatus& status) {
   if (command == nullptr) {
     return false;

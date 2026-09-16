@@ -23,6 +23,25 @@
   19:27 time on the same local date, which rang and stopped as
   `202609161927`. The first key did not suppress the second occurrence.
 
+### Follow-up: cancellable Snooze indicator
+
+- Added a compact coral `Zzz` pill in the unused Home right-center region. It
+  is drawn only when the authoritative `AlarmState` is `Snoozed`; Home keeps no
+  duplicate Snooze flag or timer.
+- Tapping the pill calls the normal occurrence-aware `AlarmService::stop()`
+  path. A scheduled Snooze therefore resolves its original occurrence, while a
+  test-alarm Snooze clears normally without writing a handled occurrence.
+- Home redraw uses the existing safe full photo/overlay render, avoiding stale
+  JPEG pixels. Snooze begins with `[SNOOZE_UI] active`; cancellation redraws
+  Home immediately, while natural expiry replaces Home with the Ringing screen.
+- Hardware verification: a 19:35 scheduled occurrence was physically snoozed,
+  displayed the pill, then tapped to cancel. It became handled as
+  `202609161935` and did not re-ring after the one-minute Snooze deadline. A
+  separate 19:41 occurrence was snoozed without tapping the pill and naturally
+  re-rang after one minute while retaining `origin=scheduled` and active
+  occurrence `202609161941`. Messages, Alarm Settings/X-overlay, and photo
+  navigation were visually confirmed unchanged.
+
 - Migrated the production CYD `RtcLinkService` from the old newline protocol to
   the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
   TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters

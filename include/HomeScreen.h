@@ -34,6 +34,7 @@ class HomeScreen {
   void drawHeart();
   void drawMessages(bool pressed = false);
   void drawAlarm(bool pressed = false);
+  void drawSnoozeIndicator();
 
   Adafruit_GFX& display_;
   U8G2_FOR_ADAFRUIT_GFX& text_;

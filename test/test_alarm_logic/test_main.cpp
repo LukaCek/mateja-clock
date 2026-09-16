@@ -260,6 +260,46 @@ void testScheduledStopClearsOriginAndActiveOccurrence() {
   TEST_ASSERT_EQUAL_INT64(0, engine.activeOccurrenceKey());
 }
 
+void testScheduledSnoozeCancellationResolvesOriginalOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.snooze(scheduled));
+  TEST_ASSERT_TRUE(engine.stop(sample(27040, 2026, 9, 16, 258, 3, 7, 30)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
+                        static_cast<int>(engine.state()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmOrigin::None),
+                        static_cast<int>(engine.origin()));
+  TEST_ASSERT_EQUAL_INT64(0, engine.activeOccurrenceKey());
+  TEST_ASSERT_EQUAL_INT64(0, engine.snoozeDeadline());
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.lastHandledOccurrenceKey());
+  TEST_ASSERT_FALSE(engine.update(sample(27620, 2026, 9, 16, 258, 3, 7, 40)));
+}
+
+void testTestSnoozeCancellationDoesNotHandleOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  const auto now = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  engine.testRing(now);
+  TEST_ASSERT_TRUE(engine.snooze(now));
+  TEST_ASSERT_TRUE(engine.stop(now));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
+                        static_cast<int>(engine.state()));
+  TEST_ASSERT_EQUAL_INT64(0, engine.lastHandledOccurrenceKey());
+}
+
+void testNaturalSnoozeExpiryRetainsScheduledOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.snooze(scheduled));
+  TEST_ASSERT_TRUE(engine.update(sample(27620, 2026, 9, 16, 258, 3, 7, 40)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
+                        static_cast<int>(engine.state()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmOrigin::Scheduled),
+                        static_cast<int>(engine.origin()));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.activeOccurrenceKey());
+}
+
 void testSerialParserCompatibility() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmSerialCommandType::ResetHandledDay),
                         static_cast<int>(alarmclock::parseAlarmSerialCommand("alarm reset-day").type));
@@ -298,6 +338,9 @@ int main() {
   RUN_TEST(testChangingVolumeDoesNotClearHandledOccurrence);
   RUN_TEST(testInvalidSampleDoesNotTriggerSnoozedAlarm);
   RUN_TEST(testScheduledStopClearsOriginAndActiveOccurrence);
+  RUN_TEST(testScheduledSnoozeCancellationResolvesOriginalOccurrence);
+  RUN_TEST(testTestSnoozeCancellationDoesNotHandleOccurrence);
+  RUN_TEST(testNaturalSnoozeExpiryRetainsScheduledOccurrence);
   RUN_TEST(testSerialParserCompatibility);
   return UNITY_END();
 }

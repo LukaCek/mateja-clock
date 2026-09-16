@@ -188,6 +188,15 @@ void showRinging() {
   Serial.printf("[SCREEN] ringing free_heap=%u\n", ESP.getFreeHeap());
 }
 
+void showSnoozedHome(const char* inputLog) {
+  alarmAudio.stop();
+  showHome();
+  Serial.println("[SNOOZE_UI] active");
+  if (inputLog != nullptr) {
+    Serial.println(inputLog);
+  }
+}
+
 void showMessagesList() {
   screenMode = ScreenMode::MessagesList;
   messagePopup.dismiss();
@@ -210,9 +219,7 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
     const RingingScreen::Action action = ringingScreen.handleTap(x, y);
     if (action == RingingScreen::Action::Snooze &&
         alarmService.snooze(clockTime.snapshot())) {
-      alarmAudio.stop();
-      showHome();
-      Serial.println("[INPUT] alarm snoozed");
+      showSnoozedHome("[INPUT] alarm snoozed");
     } else if (action == RingingScreen::Action::Stop &&
                alarmService.stop(clockTime.snapshot())) {
       alarmAudio.stop();
@@ -264,6 +271,16 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
   // Home: the popup (if any) takes precedence.
   if (messagePopup.active()) {
     showMessageDetail(messagePopup.messageIndex());
+    return;
+  }
+
+  if (home::isSnoozeIndicatorTouch(
+          x, y, alarmService.state() == alarmclock::AlarmState::Snoozed)) {
+    if (alarmService.stop(clockTime.snapshot())) {
+      alarmAudio.stop();
+      showHome();
+      Serial.println("[INPUT] snooze cancelled");
+    }
     return;
   }
 
@@ -388,9 +405,7 @@ void handlePhysicalInputs() {
   for (std::uint32_t index = 0; index < snoozeCount; ++index) {
     if (screenMode == ScreenMode::Ringing) {
       if (alarmService.snooze(clockTime.snapshot())) {
-        alarmAudio.stop();
-        showHome();
-        Serial.println("[INPUT] button snooze");
+        showSnoozedHome("[INPUT] button snooze");
       }
     } else {
       showHome();
@@ -524,8 +539,7 @@ void executeAlarmCommand(const char* command) {
       return;
     case alarmclock::AlarmSerialCommandType::Snooze:
       if (alarmService.snooze(clockTime.snapshot())) {
-        alarmAudio.stop();
-        showHome();
+        showSnoozedHome(nullptr);
       } else {
         Serial.println("[ALARM] snooze rejected");
       }

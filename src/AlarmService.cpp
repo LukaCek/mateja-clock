@@ -131,6 +131,10 @@ home::AlarmStatus AlarmService::status() const {
                            current.hour, current.minute);
 }
 
+bool AlarmService::snoozeActive() const {
+  return engine_.state() == alarmclock::AlarmState::Snoozed;
+}
+
 alarmclock::ClockSample AlarmService::clockSample(
     const TimeService::Snapshot& snapshot) {
   return alarmclock::ClockSample(

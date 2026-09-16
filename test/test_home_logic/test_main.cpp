@@ -162,6 +162,19 @@ void testUnreadBadgeFormattingChecksBufferSize() {
   TEST_ASSERT_FALSE(home::formatUnreadBadge(0, nullptr, 0));
 }
 
+void testSnoozeIndicatorVisibilityTracksAuthoritativeState() {
+  TEST_ASSERT_FALSE(home::snoozeIndicatorVisible(false));
+  TEST_ASSERT_TRUE(home::snoozeIndicatorVisible(true));
+}
+
+void testSnoozeIndicatorTouchRequiresSnoozedState() {
+  TEST_ASSERT_FALSE(home::isSnoozeIndicatorTouch(280, 120, false));
+  TEST_ASSERT_TRUE(home::isSnoozeIndicatorTouch(258, 104, true));
+  TEST_ASSERT_TRUE(home::isSnoozeIndicatorTouch(311, 135, true));
+  TEST_ASSERT_FALSE(home::isSnoozeIndicatorTouch(257, 120, true));
+  TEST_ASSERT_FALSE(home::isSnoozeIndicatorTouch(280, 136, true));
+}
+
 void testAlarmOnParsesBoundaryTimes() {
   home::AlarmStatus status{false, 12, 34};
   TEST_ASSERT_TRUE(home::parseAlarmCommand("a on 00 00", status));
@@ -240,6 +253,8 @@ int main() {
   RUN_TEST(testSlovenianDateFormattingRejectsInvalidInputAndTruncation);
   RUN_TEST(testUnreadBadgeFormatting);
   RUN_TEST(testUnreadBadgeFormattingChecksBufferSize);
+  RUN_TEST(testSnoozeIndicatorVisibilityTracksAuthoritativeState);
+  RUN_TEST(testSnoozeIndicatorTouchRequiresSnoozedState);
   RUN_TEST(testAlarmStatusGatesAndDefaults);
   RUN_TEST(testAlarmOnParsesBoundaryTimes);
   RUN_TEST(testAlarmOffPreservesConfiguredTime);

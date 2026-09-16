@@ -13,6 +13,7 @@ class AlarmService final : public AlarmStatusProvider {
   const alarmclock::AlarmConfig& config() const;
   alarmclock::AlarmState state() const;
   home::AlarmStatus status() const override;
+  bool snoozeActive() const override;
 
   bool update(const TimeService::Snapshot& snapshot);
   bool applyConfig(const alarmclock::AlarmConfig& config);

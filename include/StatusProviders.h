@@ -18,6 +18,7 @@ class AlarmStatusProvider {
  public:
   virtual ~AlarmStatusProvider() = default;
   virtual home::AlarmStatus status() const = 0;
+  virtual bool snoozeActive() const { return false; }
 };
 
 class DemoMessageStatusProvider final : public MessageStatusProvider {

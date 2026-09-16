@@ -120,6 +120,7 @@ void HomeScreen::drawOverlay() {
     text_.drawUTF8(12, 229, dateText);
   }
   drawAlarm();
+  drawSnoozeIndicator();
 }
 
 void HomeScreen::drawHeart() {
@@ -173,6 +174,22 @@ void HomeScreen::drawAlarm(bool pressed) {
   }
 
   display_.drawXBitmap(284, 207, kAlarmIcon, 24, 24, accent);
+}
+
+void HomeScreen::drawSnoozeIndicator() {
+  if (!home::snoozeIndicatorVisible(alarm_.snoozeActive())) {
+    return;
+  }
+  constexpr int16_t x = 258;
+  constexpr int16_t y = 104;
+  constexpr int16_t width = 54;
+  constexpr int16_t height = 32;
+  display_.fillRoundRect(x, y, width, height, 10, kFallbackBackground);
+  display_.drawRoundRect(x, y, width, height, 10, kCoral);
+  text_.setFont(u8g2_font_9x15_tf);
+  text_.setFontMode(1);
+  text_.setForegroundColor(kWarmWhite);
+  text_.drawUTF8(x + 13, y + 21, "Zzz");
 }
 
 void HomeScreen::flashMessagesControl() {
