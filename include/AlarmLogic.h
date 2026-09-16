@@ -21,34 +21,44 @@ struct AlarmConfig {
 
 bool validateAlarmConfig(const AlarmConfig& config);
 bool serializeSettingsJson(const AlarmConfig& config,
-                           std::int32_t lastHandledDayKey, char* output,
-                           std::size_t size);
+                            std::int64_t lastHandledOccurrenceKey, char* output,
+                            std::size_t size);
 bool parseSettingsJson(const char* input, AlarmConfig& config,
-                       std::int32_t& lastHandledDayKey);
+                       std::int64_t& lastHandledOccurrenceKey);
 
 enum class AlarmState {
-  Disabled,
   Armed,
   Ringing,
   Snoozed,
+};
+
+enum class AlarmOrigin {
+  None,
+  Scheduled,
+  Test,
 };
 
 struct ClockSample {
   ClockSample();
   ClockSample(bool validValue, std::int64_t epochSecondsValue,
               int localYearValue, int localYdayValue, int tmWdayValue,
-              int hourValue, int minuteValue);
+              int localMonthValue, int localDayValue, int hourValue,
+              int minuteValue);
 
   bool valid;
   std::int64_t epochSeconds;
   int localYear;
   int localYday;
   int tmWday;
+  int localMonth;
+  int localDay;
   int hour;
   int minute;
 };
 
 int nextEligibleDaysOffset(int tmWday, std::uint8_t daysMask);
+std::int64_t makeOccurrenceKey(int localYear, int localMonth, int localDay,
+                               int hour, int minute);
 
 class AlarmEngine {
  public:
@@ -60,8 +70,10 @@ class AlarmEngine {
   bool hardwareAllowed() const;
   void setHardwareAllowed(bool allowed);
   AlarmState state() const;
-  std::int32_t lastHandledDayKey() const;
-  void restoreLastHandledDayKey(std::int32_t dayKey);
+  AlarmOrigin origin() const;
+  std::int64_t activeOccurrenceKey() const;
+  std::int64_t lastHandledOccurrenceKey() const;
+  void restoreLastHandledOccurrenceKey(std::int64_t occurrenceKey);
   std::int64_t snoozeDeadline() const;
 
   bool update(const ClockSample& sample);
@@ -73,9 +85,10 @@ class AlarmEngine {
   AlarmConfig config_;
   bool hardwareAllowed_;
   AlarmState state_;
-  std::int32_t lastHandledDayKey_;
+  AlarmOrigin origin_;
+  std::int64_t activeOccurrenceKey_;
+  std::int64_t lastHandledOccurrenceKey_;
   std::int64_t snoozeDeadline_;
-  bool explicitTestRing_;
 };
 
 enum class AlarmSerialCommandType {

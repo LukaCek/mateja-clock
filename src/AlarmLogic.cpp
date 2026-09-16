@@ -1,5 +1,6 @@
 #include "AlarmLogic.h"
 
+#include <cinttypes>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -8,14 +9,12 @@
 namespace alarmclock {
 namespace {
 
-std::int32_t dayKey(const ClockSample& sample) {
-  return static_cast<std::int32_t>(sample.localYear * 366 + sample.localYday);
-}
-
 bool validSample(const ClockSample& sample) {
   return sample.valid && sample.localYday >= 0 && sample.localYday <= 365 &&
-         sample.tmWday >= 0 && sample.tmWday <= 6 && sample.hour >= 0 &&
-         sample.hour <= 23 && sample.minute >= 0 && sample.minute <= 59;
+         sample.tmWday >= 0 && sample.tmWday <= 6 && sample.localMonth >= 1 &&
+         sample.localMonth <= 12 && sample.localDay >= 1 &&
+         sample.localDay <= 31 && sample.hour >= 0 && sample.hour <= 23 &&
+         sample.minute >= 0 && sample.minute <= 59;
 }
 
 std::uint8_t weekdayBit(int tmWday) {
@@ -339,8 +338,8 @@ bool validateAlarmConfig(const AlarmConfig& config) {
 }
 
 bool serializeSettingsJson(const AlarmConfig& config,
-                           std::int32_t lastHandledDayKey, char* output,
-                           std::size_t size) {
+                            std::int64_t lastHandledOccurrenceKey, char* output,
+                            std::size_t size) {
   if (!validateAlarmConfig(config) || output == nullptr || size == 0) {
     return false;
   }
@@ -348,12 +347,12 @@ bool serializeSettingsJson(const AlarmConfig& config,
       output, size,
       "{\"version\":1,\"alarm\":{\"enabled\":%s,\"hour\":%u,\"minute\":%u,"
       "\"daysMask\":%u,\"snoozeMinutes\":%u,\"volume\":%u},"
-      "\"lastHandledDayKey\":%ld}",
+      "\"handled_occurrence\":%" PRId64 "}",
       config.softwareEnabled ? "true" : "false",
       static_cast<unsigned>(config.hour), static_cast<unsigned>(config.minute),
       static_cast<unsigned>(config.daysMask),
       static_cast<unsigned>(config.snoozeMinutes),
-      static_cast<unsigned>(config.volume), static_cast<long>(lastHandledDayKey));
+      static_cast<unsigned>(config.volume), lastHandledOccurrenceKey);
   if (written < 0 || static_cast<std::size_t>(written) >= size) {
     output[0] = '\0';
     return false;
@@ -362,12 +361,12 @@ bool serializeSettingsJson(const AlarmConfig& config,
 }
 
 bool parseSettingsJson(const char* input, AlarmConfig& config,
-                       std::int32_t& lastHandledDayKey) {
+                       std::int64_t& lastHandledOccurrenceKey) {
   if (input == nullptr) {
     return false;
   }
   AlarmConfig parsedConfig;
-  std::int32_t parsedDayKey = std::numeric_limits<std::int32_t>::min();
+  std::int64_t parsedOccurrenceKey = 0;
   const char* current = input;
   skipWhitespace(current);
   if (*current != '{') {
@@ -376,7 +375,7 @@ bool parseSettingsJson(const char* input, AlarmConfig& config,
   ++current;
   bool alarmSeen = false;
   bool versionSeen = false;
-  bool dayKeySeen = false;
+  bool occurrenceKeySeen = false;
   for (;;) {
     skipWhitespace(current);
     if (*current == '}') {
@@ -397,13 +396,13 @@ bool parseSettingsJson(const char* input, AlarmConfig& config,
       std::int64_t value = 0;
       if (versionSeen || !parseInteger(current, value) || value != 1) return false;
       versionSeen = true;
-    } else if (keyEquals(key, length, escaped, "lastHandledDayKey")) {
+    } else if (keyEquals(key, length, escaped, "handled_occurrence")) {
       std::int64_t value = 0;
-      if (dayKeySeen || !parseInteger(current, value) ||
-          value < std::numeric_limits<std::int32_t>::min() ||
-          value > std::numeric_limits<std::int32_t>::max()) return false;
-      parsedDayKey = static_cast<std::int32_t>(value);
-      dayKeySeen = true;
+      if (occurrenceKeySeen || !parseInteger(current, value) || value < 0) {
+        return false;
+      }
+      parsedOccurrenceKey = value;
+      occurrenceKeySeen = true;
     } else if (!skipValue(current, 1)) {
       return false;
     }
@@ -421,7 +420,9 @@ bool parseSettingsJson(const char* input, AlarmConfig& config,
     return false;
   }
   config = parsedConfig;
-  lastHandledDayKey = parsedDayKey;
+  // Legacy lastHandledDayKey is intentionally ignored: it has no scheduled
+  // HH:MM identity and cannot be safely converted into an occurrence key.
+  lastHandledOccurrenceKey = parsedOccurrenceKey;
   return true;
 }
 
@@ -431,17 +432,22 @@ ClockSample::ClockSample()
       localYear(0),
       localYday(0),
       tmWday(0),
+      localMonth(0),
+      localDay(0),
       hour(0),
       minute(0) {}
 
 ClockSample::ClockSample(bool validValue, std::int64_t epochSecondsValue,
-                         int localYearValue, int localYdayValue,
-                         int tmWdayValue, int hourValue, int minuteValue)
+                          int localYearValue, int localYdayValue,
+                          int tmWdayValue, int localMonthValue,
+                          int localDayValue, int hourValue, int minuteValue)
     : valid(validValue),
       epochSeconds(epochSecondsValue),
       localYear(localYearValue),
       localYday(localYdayValue),
       tmWday(tmWdayValue),
+      localMonth(localMonthValue),
+      localDay(localDayValue),
       hour(hourValue),
       minute(minuteValue) {}
 
@@ -457,21 +463,35 @@ int nextEligibleDaysOffset(int tmWday, std::uint8_t daysMask) {
   return -1;
 }
 
+std::int64_t makeOccurrenceKey(int localYear, int localMonth, int localDay,
+                               int hour, int minute) {
+  if (localYear < 1 || localMonth < 1 || localMonth > 12 || localDay < 1 ||
+      localDay > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return 0;
+  }
+  return static_cast<std::int64_t>(localYear) * 100000000LL +
+         static_cast<std::int64_t>(localMonth) * 1000000LL +
+         static_cast<std::int64_t>(localDay) * 10000LL +
+         static_cast<std::int64_t>(hour) * 100LL + minute;
+}
+
 AlarmEngine::AlarmEngine()
     : config_(),
       hardwareAllowed_(true),
-      state_(AlarmState::Disabled),
-      lastHandledDayKey_(std::numeric_limits<std::int32_t>::min()),
-      snoozeDeadline_(0),
-      explicitTestRing_(false) {}
+      state_(AlarmState::Armed),
+      origin_(AlarmOrigin::None),
+      activeOccurrenceKey_(0),
+      lastHandledOccurrenceKey_(0),
+      snoozeDeadline_(0) {}
 
 AlarmEngine::AlarmEngine(const AlarmConfig& config)
     : config_(),
       hardwareAllowed_(true),
-      state_(AlarmState::Disabled),
-      lastHandledDayKey_(std::numeric_limits<std::int32_t>::min()),
-      snoozeDeadline_(0),
-      explicitTestRing_(false) {
+      state_(AlarmState::Armed),
+      origin_(AlarmOrigin::None),
+      activeOccurrenceKey_(0),
+      lastHandledOccurrenceKey_(0),
+      snoozeDeadline_(0) {
   setConfig(config);
 }
 
@@ -482,11 +502,6 @@ bool AlarmEngine::setConfig(const AlarmConfig& config) {
     return false;
   }
   config_ = config;
-  snoozeDeadline_ = 0;
-  if (!explicitTestRing_) {
-    state_ = config_.softwareEnabled && hardwareAllowed_ ? AlarmState::Armed
-                                                         : AlarmState::Disabled;
-  }
   return true;
 }
 
@@ -494,55 +509,28 @@ bool AlarmEngine::hardwareAllowed() const { return hardwareAllowed_; }
 
 void AlarmEngine::setHardwareAllowed(bool allowed) {
   hardwareAllowed_ = allowed;
-  if (!hardwareAllowed_) {
-    state_ = AlarmState::Disabled;
-    snoozeDeadline_ = 0;
-    explicitTestRing_ = false;
-  } else if (!config_.softwareEnabled) {
-    state_ = AlarmState::Disabled;
-    snoozeDeadline_ = 0;
-  } else if (state_ == AlarmState::Disabled) {
-    state_ = AlarmState::Armed;
-  }
 }
 
 AlarmState AlarmEngine::state() const { return state_; }
 
-std::int32_t AlarmEngine::lastHandledDayKey() const {
-  return lastHandledDayKey_;
+AlarmOrigin AlarmEngine::origin() const { return origin_; }
+
+std::int64_t AlarmEngine::activeOccurrenceKey() const {
+  return activeOccurrenceKey_;
 }
 
-void AlarmEngine::restoreLastHandledDayKey(std::int32_t dayKeyValue) {
-  lastHandledDayKey_ = dayKeyValue;
+std::int64_t AlarmEngine::lastHandledOccurrenceKey() const {
+  return lastHandledOccurrenceKey_;
+}
+
+void AlarmEngine::restoreLastHandledOccurrenceKey(
+    std::int64_t occurrenceKey) {
+  lastHandledOccurrenceKey_ = occurrenceKey > 0 ? occurrenceKey : 0;
 }
 
 std::int64_t AlarmEngine::snoozeDeadline() const { return snoozeDeadline_; }
 
 bool AlarmEngine::update(const ClockSample& sample) {
-  if (!hardwareAllowed_) {
-    state_ = AlarmState::Disabled;
-    snoozeDeadline_ = 0;
-    explicitTestRing_ = false;
-    // A matching real occurrence while the physical gate is closed is missed,
-    // not deferred until the switch is turned on later in the same minute.
-    if (config_.softwareEnabled && validSample(sample) &&
-        (config_.daysMask & weekdayBit(sample.tmWday)) != 0 &&
-        sample.hour == config_.hour && sample.minute == config_.minute) {
-      lastHandledDayKey_ = dayKey(sample);
-    }
-    return false;
-  }
-  if (explicitTestRing_ && state_ == AlarmState::Ringing) {
-    return false;
-  }
-  if (!config_.softwareEnabled) {
-    state_ = AlarmState::Disabled;
-    snoozeDeadline_ = 0;
-    return false;
-  }
-  if (state_ == AlarmState::Disabled) {
-    state_ = AlarmState::Armed;
-  }
   if (state_ == AlarmState::Snoozed && validSample(sample) &&
       sample.epochSeconds >= snoozeDeadline_) {
     state_ = AlarmState::Ringing;
@@ -552,13 +540,25 @@ bool AlarmEngine::update(const ClockSample& sample) {
   if (state_ != AlarmState::Armed || !validSample(sample)) {
     return false;
   }
-  if ((config_.daysMask & weekdayBit(sample.tmWday)) == 0 ||
-      sample.hour != config_.hour || sample.minute != config_.minute ||
-      dayKey(sample) == lastHandledDayKey_) {
+  if (!config_.softwareEnabled ||
+      (config_.daysMask & weekdayBit(sample.tmWday)) == 0 ||
+      sample.hour != config_.hour || sample.minute != config_.minute) {
     return false;
   }
+  const std::int64_t occurrenceKey = makeOccurrenceKey(
+      sample.localYear, sample.localMonth, sample.localDay, config_.hour,
+      config_.minute);
+  if (occurrenceKey == 0 || occurrenceKey == lastHandledOccurrenceKey_) {
+    return false;
+  }
+  if (!hardwareAllowed_) {
+    // A closed hardware gate consumes only the matching scheduled occurrence.
+    lastHandledOccurrenceKey_ = occurrenceKey;
+    return false;
+  }
+  activeOccurrenceKey_ = occurrenceKey;
+  origin_ = AlarmOrigin::Scheduled;
   state_ = AlarmState::Ringing;
-  lastHandledDayKey_ = dayKey(sample);
   return true;
 }
 
@@ -572,31 +572,28 @@ bool AlarmEngine::snooze(const ClockSample& sample) {
   return true;
 }
 
-bool AlarmEngine::stop(const ClockSample& sample) {
+bool AlarmEngine::stop(const ClockSample&) {
   if (state_ != AlarmState::Ringing && state_ != AlarmState::Snoozed) {
     return false;
   }
-  const bool wasExplicitTestRing = explicitTestRing_;
-  if (validSample(sample) && !wasExplicitTestRing) {
-    lastHandledDayKey_ = dayKey(sample);
+  if (origin_ == AlarmOrigin::Scheduled && activeOccurrenceKey_ != 0) {
+    lastHandledOccurrenceKey_ = activeOccurrenceKey_;
   }
   snoozeDeadline_ = 0;
-  explicitTestRing_ = false;
-  state_ = config_.softwareEnabled && hardwareAllowed_ ? AlarmState::Armed
-                                                       : AlarmState::Disabled;
+  activeOccurrenceKey_ = 0;
+  origin_ = AlarmOrigin::None;
+  state_ = AlarmState::Armed;
   return true;
 }
 
 void AlarmEngine::testRing(const ClockSample&) {
   if (!hardwareAllowed_) {
-    state_ = AlarmState::Disabled;
-    snoozeDeadline_ = 0;
-    explicitTestRing_ = false;
     return;
   }
   state_ = AlarmState::Ringing;
   snoozeDeadline_ = 0;
-  explicitTestRing_ = true;
+  activeOccurrenceKey_ = 0;
+  origin_ = AlarmOrigin::Test;
 }
 
 AlarmSerialCommand::AlarmSerialCommand()

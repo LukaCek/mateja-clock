@@ -34,18 +34,18 @@ class AlarmService final : public AlarmStatusProvider {
   static alarmclock::ClockSample clockSample(
       const TimeService::Snapshot& snapshot);
   bool load(const char* path, alarmclock::AlarmConfig& config,
-            int32_t& lastHandledDayKey) const;
+             int64_t& lastHandledOccurrenceKey) const;
   bool save(const alarmclock::AlarmConfig& config,
-            int32_t lastHandledDayKey) const;
+            int64_t lastHandledOccurrenceKey) const;
   bool ensureConfigDirectory() const;
-  bool persistHandledDayKey() const;
+  bool persistHandledOccurrenceKey() const;
 
   alarmclock::AlarmEngine engine_;
   bool sdMounted_ = false;
   bool invalidTimeLogged_ = false;
   int64_t lastEvalMinuteKey_ = -1;
-  alarmclock::AlarmState lastEvalState_ = alarmclock::AlarmState::Disabled;
+  alarmclock::AlarmState lastEvalState_ = alarmclock::AlarmState::Armed;
   bool lastEvalHardwareAllowed_ = true;
-  int32_t lastEvalHandledDayKey_ = 0;
+  int64_t lastEvalHandledOccurrenceKey_ = 0;
   bool evalStateKnown_ = false;
 };

@@ -2,8 +2,8 @@
 
 #include <SD.h>
 
+#include <cinttypes>
 #include <cstring>
-#include <limits>
 
 namespace {
 
@@ -24,8 +24,6 @@ bool sameConfig(const alarmclock::AlarmConfig& left,
 
 const char* stateName(alarmclock::AlarmState state) {
   switch (state) {
-    case alarmclock::AlarmState::Disabled:
-      return "disabled";
     case alarmclock::AlarmState::Armed:
       return "armed";
     case alarmclock::AlarmState::Ringing:
@@ -36,11 +34,31 @@ const char* stateName(alarmclock::AlarmState state) {
   return "unknown";
 }
 
+const char* originName(alarmclock::AlarmOrigin origin) {
+  switch (origin) {
+    case alarmclock::AlarmOrigin::None:
+      return "none";
+    case alarmclock::AlarmOrigin::Scheduled:
+      return "scheduled";
+    case alarmclock::AlarmOrigin::Test:
+      return "test";
+  }
+  return "unknown";
+}
+
+void formatOccurrenceKey(std::int64_t key, char* output, size_t size) {
+  if (key == 0) {
+    std::snprintf(output, size, "none");
+    return;
+  }
+  std::snprintf(output, size, "%" PRId64, key);
+}
+
 const char* evaluationReason(const TimeService::Snapshot& snapshot,
-                             const alarmclock::AlarmConfig& config,
-                             bool hardwareAllowed,
-                             alarmclock::AlarmState state,
-                             int32_t handledDayKey) {
+                              const alarmclock::AlarmConfig& config,
+                              bool hardwareAllowed,
+                              alarmclock::AlarmState state,
+                              std::int64_t handledOccurrenceKey) {
   if (!snapshot.valid || snapshot.yearDay < 0 || snapshot.yearDay > 365 ||
       snapshot.weekday < 0 || snapshot.weekday > 6 || snapshot.hour < 0 ||
       snapshot.hour > 23 || snapshot.minute < 0 || snapshot.minute > 59) {
@@ -53,9 +71,13 @@ const char* evaluationReason(const TimeService::Snapshot& snapshot,
   if (snapshot.hour != config.hour || snapshot.minute != config.minute) {
     return "wrong_minute";
   }
-  if (!hardwareAllowed) return "blocked_by_hardware";
-  const int32_t dayKey = snapshot.year * 366 + snapshot.yearDay;
-  if (dayKey == handledDayKey) return "blocked_by_handled_day";
+  const std::int64_t occurrenceKey = alarmclock::makeOccurrenceKey(
+      snapshot.year, snapshot.month + 1, snapshot.day, config.hour,
+      config.minute);
+  if (occurrenceKey == handledOccurrenceKey) {
+    return "occurrence_already_handled";
+  }
+  if (!hardwareAllowed) return "hardware_off";
   if (state == alarmclock::AlarmState::Snoozed) return "snoozed";
   if (state == alarmclock::AlarmState::Ringing) return "ringing";
   return "eligible";
@@ -70,15 +92,15 @@ void AlarmService::begin(bool sdMounted) {
   lastEvalMinuteKey_ = -1;
 
   alarmclock::AlarmConfig loadedConfig;
-  int32_t loadedDayKey = std::numeric_limits<int32_t>::min();
+  int64_t loadedOccurrenceKey = 0;
   bool loaded = false;
   if (sdMounted_) {
-    loaded = load(kSettingsPath, loadedConfig, loadedDayKey);
+    loaded = load(kSettingsPath, loadedConfig, loadedOccurrenceKey);
     if (!loaded) {
-      loaded = load(kBackupPath, loadedConfig, loadedDayKey);
+      loaded = load(kBackupPath, loadedConfig, loadedOccurrenceKey);
       if (loaded) {
         Serial.println("[ALARM] recovered settings from backup");
-        if (!save(loadedConfig, loadedDayKey)) {
+        if (!save(loadedConfig, loadedOccurrenceKey)) {
           Serial.println("[ALARM] backup recovery persistence failed");
         }
       }
@@ -87,14 +109,14 @@ void AlarmService::begin(bool sdMounted) {
 
   if (!loaded) {
     loadedConfig = alarmclock::AlarmConfig();
-    loadedDayKey = std::numeric_limits<int32_t>::min();
+    loadedOccurrenceKey = 0;
     Serial.println("[ALARM] using default settings");
   }
 
   const bool hardwareAllowed = engine_.hardwareAllowed();
   engine_ = alarmclock::AlarmEngine(loadedConfig);
   engine_.setHardwareAllowed(hardwareAllowed);
-  engine_.restoreLastHandledDayKey(loadedDayKey);
+  engine_.restoreLastHandledOccurrenceKey(loadedOccurrenceKey);
 }
 
 const alarmclock::AlarmConfig& AlarmService::config() const {
@@ -113,8 +135,8 @@ alarmclock::ClockSample AlarmService::clockSample(
     const TimeService::Snapshot& snapshot) {
   return alarmclock::ClockSample(
       snapshot.valid, static_cast<int64_t>(snapshot.epochSeconds),
-      snapshot.year, snapshot.yearDay, snapshot.weekday, snapshot.hour,
-      snapshot.minute);
+      snapshot.year, snapshot.yearDay, snapshot.weekday, snapshot.month + 1,
+      snapshot.day, snapshot.hour, snapshot.minute);
 }
 
 bool AlarmService::update(const TimeService::Snapshot& snapshot) {
@@ -138,14 +160,15 @@ bool AlarmService::update(const TimeService::Snapshot& snapshot) {
   }
 
   const alarmclock::AlarmState previous = engine_.state();
-  const int32_t previousDayKey = engine_.lastHandledDayKey();
+  const std::int64_t previousHandledOccurrenceKey =
+      engine_.lastHandledOccurrenceKey();
   engine_.update(clockSample(snapshot));
   const bool startedRinging = previous != alarmclock::AlarmState::Ringing &&
                                engine_.state() == alarmclock::AlarmState::Ringing;
-  const bool handledDayChanged = engine_.lastHandledDayKey() != previousDayKey;
-  if (handledDayChanged &&
-       !persistHandledDayKey()) {
-    Serial.println("[ALARM] handled day persistence failed");
+  const bool handledOccurrenceChanged =
+      engine_.lastHandledOccurrenceKey() != previousHandledOccurrenceKey;
+  if (handledOccurrenceChanged && !persistHandledOccurrenceKey()) {
+    Serial.println("[ALARM] handled occurrence persistence failed");
   }
 
   const alarmclock::AlarmConfig& config = engine_.config();
@@ -163,45 +186,47 @@ bool AlarmService::update(const TimeService::Snapshot& snapshot) {
   const bool gateChanged = !evalStateKnown_ ||
                            hardwareAllowed != lastEvalHardwareAllowed_;
   const bool handledChanged = !evalStateKnown_ ||
-                              engine_.lastHandledDayKey() != lastEvalHandledDayKey_;
+      engine_.lastHandledOccurrenceKey() != lastEvalHandledOccurrenceKey_;
   const bool minuteChanged = minuteKey != lastEvalMinuteKey_;
   if ((nearScheduledMinute && minuteChanged) || stateChanged || gateChanged ||
       handledChanged) {
-    const int32_t dayKey = snapshot.year * 366 + snapshot.yearDay;
+    const std::int64_t occurrenceKey = alarmclock::makeOccurrenceKey(
+        snapshot.year, snapshot.month + 1, snapshot.day, config.hour,
+        config.minute);
     const bool snoozeRering = startedRinging &&
                               previous == alarmclock::AlarmState::Snoozed;
     const char* action = startedRinging ? (snoozeRering ? "RERING" : "RING")
                                         : "BLOCK";
     const char* reason = startedRinging ? (snoozeRering ? "snooze" : "scheduled")
                                         : evaluationReason(
-                                              snapshot, config, hardwareAllowed,
-                                              engine_.state(),
-                                              engine_.lastHandledDayKey());
+                                               snapshot, config, hardwareAllowed,
+                                               engine_.state(),
+                                               engine_.lastHandledOccurrenceKey());
     Serial.printf(
-        "[ALARM_EVAL] epoch=%lld local=%04d-%03d %02d:%02d wd=%d "
-        "cfg=%02u:%02u days=%u sw=%u hw=%u eff=%u state=%s day=%ld "
-        "handled=%ld snooze=%lld eligible=%u action=%s reason=%s%s\n",
+        "[ALARM_EVAL] epoch=%lld local=%04d-%02d-%02d %02d:%02d wd=%d "
+        "cfg=%02u:%02u occurrence=%" PRId64 " last_handled=%" PRId64
+        " sw=%u hw=%u eff=%u state=%s origin=%s snooze=%lld action=%s "
+        "reason=%s%s\n",
         static_cast<long long>(snapshot.epochSeconds), snapshot.year,
-        snapshot.yearDay, snapshot.hour, snapshot.minute, snapshot.weekday,
+        snapshot.month + 1, snapshot.day, snapshot.hour, snapshot.minute,
+        snapshot.weekday,
         static_cast<unsigned>(config.hour), static_cast<unsigned>(config.minute),
-        static_cast<unsigned>(config.daysMask), config.softwareEnabled ? 1U : 0U,
+        occurrenceKey, engine_.lastHandledOccurrenceKey(),
+        config.softwareEnabled ? 1U : 0U,
         hardwareAllowed ? 1U : 0U,
         config.softwareEnabled && hardwareAllowed ? 1U : 0U,
-        stateName(engine_.state()), static_cast<long>(dayKey),
-        static_cast<long>(engine_.lastHandledDayKey()),
-        static_cast<long long>(engine_.snoozeDeadline()),
-        (startedRinging || std::strcmp(reason, "eligible") == 0) ? 1U : 0U,
-        action, reason,
+        stateName(engine_.state()), originName(engine_.origin()),
+        static_cast<long long>(engine_.snoozeDeadline()), action, reason,
         !hardwareAllowed && timeValid && config.softwareEnabled &&
                 (config.daysMask & (1U << ((snapshot.weekday + 6) % 7))) != 0 &&
                 snapshot.hour == config.hour && snapshot.minute == config.minute
-            ? " occurrence=handled"
+            ? " occurrence=consumed"
             : "");
   }
   lastEvalMinuteKey_ = minuteKey;
   lastEvalState_ = engine_.state();
   lastEvalHardwareAllowed_ = hardwareAllowed;
-  lastEvalHandledDayKey_ = engine_.lastHandledDayKey();
+  lastEvalHandledOccurrenceKey_ = engine_.lastHandledOccurrenceKey();
   evalStateKnown_ = true;
   return startedRinging;
 }
@@ -210,7 +235,7 @@ bool AlarmService::applyConfig(const alarmclock::AlarmConfig& newConfig) {
   if (!alarmclock::validateAlarmConfig(newConfig)) {
     return false;
   }
-  if (!save(newConfig, engine_.lastHandledDayKey())) {
+  if (!save(newConfig, engine_.lastHandledOccurrenceKey())) {
     return false;
   }
   return engine_.setConfig(newConfig);
@@ -256,11 +281,14 @@ bool AlarmService::snooze(const TimeService::Snapshot& snapshot) {
 }
 
 bool AlarmService::stop(const TimeService::Snapshot& snapshot) {
+  const std::int64_t previousHandledOccurrenceKey =
+      engine_.lastHandledOccurrenceKey();
   if (!engine_.stop(clockSample(snapshot))) {
     return false;
   }
-  if (!persistHandledDayKey()) {
-    Serial.println("[ALARM] handled day persistence failed");
+  if (engine_.lastHandledOccurrenceKey() != previousHandledOccurrenceKey &&
+      !persistHandledOccurrenceKey()) {
+    Serial.println("[ALARM] handled occurrence persistence failed");
   }
   return true;
 }
@@ -274,12 +302,16 @@ bool AlarmService::hardwareAllowed() const {
 }
 
 bool AlarmService::resetHandledDay() {
-  engine_.restoreLastHandledDayKey(std::numeric_limits<std::int32_t>::min());
-  return persistHandledDayKey();
+  engine_.restoreLastHandledOccurrenceKey(0);
+  const bool persisted = persistHandledOccurrenceKey();
+  if (persisted) {
+    Serial.println("[ALARM] handled occurrence reset");
+  }
+  return persisted;
 }
 
 bool AlarmService::load(const char* path, alarmclock::AlarmConfig& loadedConfig,
-                        int32_t& loadedDayKey) const {
+                         int64_t& loadedOccurrenceKey) const {
   File file = SD.open(path, FILE_READ);
   if (!file) {
     return false;
@@ -300,7 +332,8 @@ bool AlarmService::load(const char* path, alarmclock::AlarmConfig& loadedConfig,
     return false;
   }
   buffer[size] = '\0';
-  if (!alarmclock::parseSettingsJson(buffer, loadedConfig, loadedDayKey)) {
+  if (!alarmclock::parseSettingsJson(buffer, loadedConfig,
+                                     loadedOccurrenceKey)) {
     Serial.printf("[ALARM] settings parse failed path=%s\n", path);
     return false;
   }
@@ -321,14 +354,14 @@ bool AlarmService::ensureConfigDirectory() const {
 }
 
 bool AlarmService::save(const alarmclock::AlarmConfig& newConfig,
-                        int32_t lastHandledDayKey) const {
+                        int64_t lastHandledOccurrenceKey) const {
   if (!sdMounted_ || !ensureConfigDirectory()) {
     return false;
   }
 
   char buffer[kSettingsBufferSize];
-  if (!alarmclock::serializeSettingsJson(newConfig, lastHandledDayKey, buffer,
-                                    sizeof(buffer))) {
+  if (!alarmclock::serializeSettingsJson(newConfig, lastHandledOccurrenceKey, buffer,
+                                     sizeof(buffer))) {
     return false;
   }
   const size_t length = std::strlen(buffer);
@@ -350,10 +383,10 @@ bool AlarmService::save(const alarmclock::AlarmConfig& newConfig,
   }
 
   alarmclock::AlarmConfig verifiedConfig;
-  int32_t verifiedDayKey = std::numeric_limits<int32_t>::min();
-  if (!load(kTemporaryPath, verifiedConfig, verifiedDayKey) ||
+  int64_t verifiedOccurrenceKey = 0;
+  if (!load(kTemporaryPath, verifiedConfig, verifiedOccurrenceKey) ||
       !sameConfig(newConfig, verifiedConfig) ||
-      verifiedDayKey != lastHandledDayKey) {
+      verifiedOccurrenceKey != lastHandledOccurrenceKey) {
     SD.remove(kTemporaryPath);
     return false;
   }
@@ -384,22 +417,30 @@ bool AlarmService::save(const alarmclock::AlarmConfig& newConfig,
   return true;
 }
 
-bool AlarmService::persistHandledDayKey() const {
-  return save(engine_.config(), engine_.lastHandledDayKey());
+bool AlarmService::persistHandledOccurrenceKey() const {
+  return save(engine_.config(), engine_.lastHandledOccurrenceKey());
 }
 
 void AlarmService::printStatus() const {
   const alarmclock::AlarmConfig& current = engine_.config();
+  char lastHandled[24];
+  char active[24];
+  formatOccurrenceKey(engine_.lastHandledOccurrenceKey(), lastHandled,
+                      sizeof(lastHandled));
+  formatOccurrenceKey(engine_.activeOccurrenceKey(), active, sizeof(active));
   Serial.printf(
-      "[ALARM_STATUS] enabled=%s hardware=%s state=%s time=%02u:%02u "
-      "days=%u snooze=%u volume=%u handled_day=%ld sd=%s\n",
+      "[ALARM_STATUS] software_enabled=%s hardware_allowed=%s "
+      "effective_enabled=%s state=%s origin=%s time=%02u:%02u days=%u "
+      "snooze=%u volume=%u last_handled_occurrence=%s "
+      "active_occurrence=%s sd=%s\n",
       current.softwareEnabled ? "yes" : "no",
-      engine_.hardwareAllowed() ? "allowed" : "blocked",
-      stateName(engine_.state()), static_cast<unsigned>(current.hour),
+      engine_.hardwareAllowed() ? "yes" : "no",
+      current.softwareEnabled && engine_.hardwareAllowed() ? "yes" : "no",
+      stateName(engine_.state()), originName(engine_.origin()),
+      static_cast<unsigned>(current.hour),
       static_cast<unsigned>(current.minute),
       static_cast<unsigned>(current.daysMask),
       static_cast<unsigned>(current.snoozeMinutes),
-      static_cast<unsigned>(current.volume),
-      static_cast<long>(engine_.lastHandledDayKey()),
+      static_cast<unsigned>(current.volume), lastHandled, active,
       sdMounted_ ? "mounted" : "unavailable");
 }

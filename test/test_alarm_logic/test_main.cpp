@@ -2,418 +2,272 @@
 
 #include <cstdint>
 #include <cstring>
-#include <limits>
 
 #include "AlarmLogic.h"
 
 namespace {
 
-alarmclock::ClockSample sample(std::int64_t epoch, int year, int yday, int wday,
-                          int hour, int minute, bool valid = true) {
-  return alarmclock::ClockSample(valid, epoch, year, yday, wday, hour, minute);
+alarmclock::ClockSample sample(std::int64_t epoch, int year, int month, int day,
+                               int yday, int wday, int hour, int minute,
+                               bool valid = true) {
+  return alarmclock::ClockSample(valid, epoch, year, yday, wday, month, day,
+                                 hour, minute);
 }
 
-alarmclock::AlarmConfig enabledConfig() {
-  return alarmclock::AlarmConfig(true, 7, 30, 0x1F, 10, 65);
+alarmclock::AlarmConfig enabledConfig(int hour = 7, int minute = 30) {
+  return alarmclock::AlarmConfig(true, static_cast<std::uint8_t>(hour),
+                                 static_cast<std::uint8_t>(minute), 0x7F, 10,
+                                 65);
+}
+
+std::int64_t key(int year, int month, int day, int hour, int minute) {
+  return alarmclock::makeOccurrenceKey(year, month, day, hour, minute);
 }
 
 void testConfigDefaultsAndValidation() {
   const alarmclock::AlarmConfig defaults;
   TEST_ASSERT_FALSE(defaults.softwareEnabled);
-  TEST_ASSERT_EQUAL_UINT8(7, defaults.hour);
-  TEST_ASSERT_EQUAL_UINT8(0, defaults.minute);
-  TEST_ASSERT_EQUAL_HEX8(0x1F, defaults.daysMask);
   TEST_ASSERT_EQUAL_UINT8(10, defaults.snoozeMinutes);
-  TEST_ASSERT_EQUAL_UINT8(65, defaults.volume);
   TEST_ASSERT_TRUE(alarmclock::validateAlarmConfig(defaults));
-
   TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
       alarmclock::AlarmConfig(true, 24, 0, 1, 1, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 60, 1, 1, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 0, 0, 1, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 0, 0x80, 1, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 0, 1, 0, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 0, 1, 61, 0)));
-  TEST_ASSERT_FALSE(alarmclock::validateAlarmConfig(
-      alarmclock::AlarmConfig(true, 0, 0, 1, 1, 101)));
 }
 
-void assertConfigEqual(const alarmclock::AlarmConfig& expected,
-                       const alarmclock::AlarmConfig& actual) {
-  TEST_ASSERT_EQUAL(expected.softwareEnabled, actual.softwareEnabled);
-  TEST_ASSERT_EQUAL_UINT8(expected.hour, actual.hour);
-  TEST_ASSERT_EQUAL_UINT8(expected.minute, actual.minute);
-  TEST_ASSERT_EQUAL_UINT8(expected.daysMask, actual.daysMask);
-  TEST_ASSERT_EQUAL_UINT8(expected.snoozeMinutes, actual.snoozeMinutes);
-  TEST_ASSERT_EQUAL_UINT8(expected.volume, actual.volume);
+void testOccurrenceKeyUsesLocalCivilDate() {
+  TEST_ASSERT_EQUAL_INT64(202609161700, key(2026, 9, 16, 17, 0));
+  // A UTC time near midnight can be 00:30 on the next Europe/Ljubljana date.
+  TEST_ASSERT_EQUAL_INT64(202609170030, key(2026, 9, 17, 0, 30));
+  TEST_ASSERT_EQUAL_INT64(0, key(2026, 0, 17, 0, 30));
 }
 
-void testSettingsJsonDefaultsRoundtrip() {
-  const alarmclock::AlarmConfig expected;
-  char json[192];
+void testSettingsOccurrenceRoundtrip64Bit() {
+  const alarmclock::AlarmConfig expected = enabledConfig(17, 0);
+  char json[256];
   TEST_ASSERT_TRUE(alarmclock::serializeSettingsJson(
-      expected, std::numeric_limits<std::int32_t>::min(), json, sizeof(json)));
-  alarmclock::AlarmConfig actual(true, 1, 2, 3, 4, 5);
-  std::int32_t dayKey = 42;
-  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(json, actual, dayKey));
-  assertConfigEqual(expected, actual);
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(), dayKey);
-}
-
-void testSettingsJsonNondefaultRoundtrip() {
-  const alarmclock::AlarmConfig expected(true, 23, 59, 0x55, 60, 100);
-  char json[192];
-  TEST_ASSERT_TRUE(
-      alarmclock::serializeSettingsJson(expected, 741736, json, sizeof(json)));
+      expected, 202609161700LL, json, sizeof(json)));
+  TEST_ASSERT_NOT_NULL(std::strstr(json, "handled_occurrence"));
   alarmclock::AlarmConfig actual;
-  std::int32_t dayKey = 0;
-  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(json, actual, dayKey));
-  assertConfigEqual(expected, actual);
-  TEST_ASSERT_EQUAL_INT32(741736, dayKey);
-  char small[8] = "value";
-  TEST_ASSERT_FALSE(
-      alarmclock::serializeSettingsJson(expected, dayKey, small, sizeof(small)));
-  TEST_ASSERT_EQUAL_STRING("", small);
+  std::int64_t occurrence = 0;
+  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(json, actual, occurrence));
+  TEST_ASSERT_EQUAL_UINT8(17, actual.hour);
+  TEST_ASSERT_EQUAL_INT64(202609161700LL, occurrence);
 }
 
-void testSettingsJsonRejectsMalformedAndPartialWithoutMutation() {
-  const char* invalid[] = {
-      "", "[]", "{", "{\"alarm\":{}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,"
-      "\"daysMask\":31,\"snoozeMinutes\":10}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,"
-      "\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65,}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,"
-      "\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}} trailing",
-  };
-  for (const char* json : invalid) {
-    alarmclock::AlarmConfig config(true, 1, 2, 3, 4, 5);
-    std::int32_t dayKey = 99;
-    TEST_ASSERT_FALSE(alarmclock::parseSettingsJson(json, config, dayKey));
-    assertConfigEqual(alarmclock::AlarmConfig(true, 1, 2, 3, 4, 5), config);
-    TEST_ASSERT_EQUAL_INT32(99, dayKey);
-  }
-}
-
-void testSettingsJsonRejectsInvalidValuesAndTypes() {
-  const char* invalid[] = {
-      "{\"alarm\":{\"enabled\":1,\"hour\":7,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":24,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":60,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,\"daysMask\":0,\"snoozeMinutes\":10,\"volume\":65}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":0,\"volume\":65}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":101}}",
-      "{\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65},\"lastHandledDayKey\":2147483648}",
-      "{\"version\":2,\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":0,\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}}",
-  };
-  for (const char* json : invalid) {
-    alarmclock::AlarmConfig config;
-    std::int32_t dayKey = 5;
-    TEST_ASSERT_FALSE(alarmclock::parseSettingsJson(json, config, dayKey));
-    assertConfigEqual(alarmclock::AlarmConfig(), config);
-    TEST_ASSERT_EQUAL_INT32(5, dayKey);
-  }
-}
-
-void testSettingsJsonAllowsUnrelatedTopLevelFieldsAndOrder() {
-  const char* json =
-      " { \"extra\" : [true, null, {\"x\":\"y\"}], "
-      "\"lastHandledDayKey\" : -123, \"alarm\" : {"
-      "\"volume\":80,\"daysMask\":64,\"enabled\":true,"
-      "\"snoozeMinutes\":5,\"minute\":45,\"hour\":6},"
-      "\"version\":1 } ";
+void testLegacyDayKeyDoesNotBlockSchedule() {
+  const char* legacy =
+      "{\"version\":1,\"alarm\":{\"enabled\":true,\"hour\":7,\"minute\":30,"
+      "\"daysMask\":127,\"snoozeMinutes\":10,\"volume\":65},"
+      "\"lastHandledDayKey\":741774}";
   alarmclock::AlarmConfig config;
-  std::int32_t dayKey = 0;
-  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(json, config, dayKey));
-  assertConfigEqual(alarmclock::AlarmConfig(true, 6, 45, 64, 5, 80), config);
-  TEST_ASSERT_EQUAL_INT32(-123, dayKey);
-
-  const char* withoutDayKey =
-      "{\"alarm\":{\"enabled\":false,\"hour\":7,\"minute\":0,"
-      "\"daysMask\":31,\"snoozeMinutes\":10,\"volume\":65}}";
-  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(withoutDayKey, config, dayKey));
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(), dayKey);
+  std::int64_t occurrence = 99;
+  TEST_ASSERT_TRUE(alarmclock::parseSettingsJson(legacy, config, occurrence));
+  TEST_ASSERT_EQUAL_INT64(0, occurrence);
+  alarmclock::AlarmEngine engine(config);
+  TEST_ASSERT_TRUE(engine.update(sample(27020, 2026, 9, 16, 258, 3, 7, 30)));
 }
 
-void testWeekdayOffsetsUseMondayFirstMask() {
-  TEST_ASSERT_EQUAL_INT(0, alarmclock::nextEligibleDaysOffset(1, 0x01));
-  TEST_ASSERT_EQUAL_INT(6, alarmclock::nextEligibleDaysOffset(2, 0x01));
-  TEST_ASSERT_EQUAL_INT(1, alarmclock::nextEligibleDaysOffset(0, 0x01));
-  TEST_ASSERT_EQUAL_INT(0, alarmclock::nextEligibleDaysOffset(0, 0x40));
-  TEST_ASSERT_EQUAL_INT(-1, alarmclock::nextEligibleDaysOffset(-1, 1));
-  TEST_ASSERT_EQUAL_INT(-1, alarmclock::nextEligibleDaysOffset(7, 1));
-  TEST_ASSERT_EQUAL_INT(-1, alarmclock::nextEligibleDaysOffset(1, 0));
-  TEST_ASSERT_EQUAL_INT(-1, alarmclock::nextEligibleDaysOffset(1, 0x80));
-}
-
-void testScheduledAlarmTriggersOnceWithoutSecondDependency() {
+void testNormalOccurrenceRingsAtTwentySeconds() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample monday = sample(1000, 2026, 10, 1, 7, 30);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_TRUE(engine.update(monday));
+  TEST_ASSERT_TRUE(engine.update(sample(27020, 2026, 9, 16, 258, 3, 7, 30)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
                         static_cast<int>(engine.state()));
-  TEST_ASSERT_TRUE(engine.stop(monday));
-  TEST_ASSERT_FALSE(engine.update(sample(1030, 2026, 10, 1, 7, 30)));
-  TEST_ASSERT_FALSE(engine.update(sample(1100, 2026, 11, 2, 7, 29)));
-  TEST_ASSERT_TRUE(engine.update(sample(1160, 2026, 11, 2, 7, 30)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmOrigin::Scheduled),
+                        static_cast<int>(engine.origin()));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.activeOccurrenceKey());
 }
 
-void testScheduledAlarmTriggersOnceAcrossWholeMatchingMinute() {
+void testStopHandlesOnlyExactOccurrence() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  const int32_t dayKey = 2026 * 366 + 10;
-  TEST_ASSERT_TRUE(engine.update(sample(7 * 3600 + 30 * 60, 2026, 10, 1,
-                                        7, 30)));
-  TEST_ASSERT_FALSE(engine.update(sample(7 * 3600 + 30 * 60 + 1, 2026, 10, 1,
-                                         7, 30)));
-  TEST_ASSERT_FALSE(engine.update(sample(7 * 3600 + 30 * 60 + 20, 2026, 10, 1,
-                                         7, 30)));
-  TEST_ASSERT_FALSE(engine.update(sample(7 * 3600 + 30 * 60 + 59, 2026, 10, 1,
-                                         7, 30)));
-  TEST_ASSERT_EQUAL_INT32(dayKey, engine.lastHandledDayKey());
+  const auto at20 = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(at20));
+  TEST_ASSERT_TRUE(engine.stop(at20));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.lastHandledOccurrenceKey());
+  TEST_ASSERT_FALSE(engine.update(sample(27040, 2026, 9, 16, 258, 3, 7, 30)));
 }
 
-void testScheduleRequiresValidSelectedLocalTime() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  TEST_ASSERT_FALSE(engine.update(sample(1, 2026, 10, 0, 7, 30)));
-  TEST_ASSERT_FALSE(engine.update(sample(1, 2026, 10, 1, 7, 30, false)));
-  TEST_ASSERT_FALSE(engine.update(sample(1, 2026, 10, 1, 7, 29)));
-  TEST_ASSERT_FALSE(engine.update(sample(1, 2026, 10, 8, 7, 30)));
-  TEST_ASSERT_TRUE(engine.update(sample(1, 2026, 10, 1, 7, 30)));
+void testSameDayAlarmTimeChangeRings() {
+  alarmclock::AlarmEngine engine(enabledConfig(7, 30));
+  const auto morning = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(morning));
+  TEST_ASSERT_TRUE(engine.stop(morning));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.lastHandledOccurrenceKey());
+  TEST_ASSERT_TRUE(engine.setConfig(enabledConfig(17, 0)));
+  TEST_ASSERT_TRUE(engine.update(sample(61220, 2026, 9, 16, 258, 3, 17, 0)));
+  TEST_ASSERT_EQUAL_INT64(202609161700LL, engine.activeOccurrenceKey());
 }
 
-void testSnoozeUsesAbsoluteDeadlineAndRerings() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample now = sample(1000, 2026, 10, 1, 7, 30);
-  TEST_ASSERT_TRUE(engine.update(now));
-  TEST_ASSERT_TRUE(engine.snooze(now));
-  TEST_ASSERT_EQUAL_INT64(1600, engine.snoozeDeadline());
-  TEST_ASSERT_FALSE(engine.update(sample(1599, 2026, 10, 1, 7, 39)));
-  TEST_ASSERT_TRUE(engine.update(sample(1600, 2026, 10, 1, 7, 40)));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_EQUAL_INT64(0, engine.snoozeDeadline());
+void testTestStopDoesNotPoisonRealSchedule() {
+  alarmclock::AlarmEngine engine(enabledConfig(17, 0));
+  const auto earlier = sample(36000, 2026, 9, 16, 258, 3, 10, 0);
+  engine.testRing(earlier);
+  TEST_ASSERT_TRUE(engine.stop(earlier));
+  TEST_ASSERT_EQUAL_INT64(0, engine.lastHandledOccurrenceKey());
+  TEST_ASSERT_TRUE(engine.update(sample(61220, 2026, 9, 16, 258, 3, 17, 0)));
 }
 
-void testRealStopMarksValidDayAndTestStopDoesNot() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample now = sample(1000, 2026, 20, 1, 7, 30);
-  TEST_ASSERT_TRUE(engine.update(now));
-  TEST_ASSERT_TRUE(engine.stop(now));
-  TEST_ASSERT_TRUE(engine.config().softwareEnabled);
-  TEST_ASSERT_EQUAL_INT(2026 * 366 + 20, engine.lastHandledDayKey());
-  TEST_ASSERT_FALSE(engine.update(now));
-  TEST_ASSERT_FALSE(engine.stop(now));
-
-  alarmclock::AlarmEngine testEngine(enabledConfig());
-  testEngine.testRing(now);
-  TEST_ASSERT_TRUE(testEngine.stop(now));
-  TEST_ASSERT_TRUE(testEngine.config().softwareEnabled);
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(),
-                          testEngine.lastHandledDayKey());
-  TEST_ASSERT_TRUE(testEngine.update(now));
-}
-
-void testExplicitTestRingDoesNotConsumeLaterScheduledOccurrence() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample testTime = sample(7 * 3600, 2026, 20, 1, 7, 0);
-  const alarmclock::ClockSample scheduled =
-      sample(7 * 3600 + 30 * 60 + 20, 2026, 20, 1, 7, 30);
-
-  engine.testRing(testTime);
-  TEST_ASSERT_TRUE(engine.stop(testTime));
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(),
-                          engine.lastHandledDayKey());
-  TEST_ASSERT_TRUE(engine.update(scheduled));
-}
-
-void testSnoozedExplicitTestRingDoesNotConsumeLaterScheduledOccurrence() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample testTime = sample(7 * 3600, 2026, 20, 1, 7, 0);
-  const alarmclock::ClockSample testRering =
-      sample(7 * 3600 + 10 * 60, 2026, 20, 1, 7, 10);
-  const alarmclock::ClockSample scheduled =
-      sample(7 * 3600 + 30 * 60 + 20, 2026, 20, 1, 7, 30);
-
+void testTestSnoozeLifecycleDoesNotPoisonRealSchedule() {
+  alarmclock::AlarmEngine engine(enabledConfig(17, 0));
+  const auto testTime = sample(36000, 2026, 9, 16, 258, 3, 10, 0);
   engine.testRing(testTime);
   TEST_ASSERT_TRUE(engine.snooze(testTime));
-  TEST_ASSERT_TRUE(engine.update(testRering));
-  TEST_ASSERT_TRUE(engine.stop(testRering));
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(),
-                          engine.lastHandledDayKey());
+  TEST_ASSERT_TRUE(engine.update(sample(36600, 2026, 9, 16, 258, 3, 10, 10)));
+  TEST_ASSERT_TRUE(engine.stop(sample(36601, 2026, 9, 16, 258, 3, 10, 10)));
+  TEST_ASSERT_EQUAL_INT64(0, engine.lastHandledOccurrenceKey());
+  TEST_ASSERT_TRUE(engine.update(sample(61220, 2026, 9, 16, 258, 3, 17, 0)));
+}
+
+void testScheduledSnoozePreservesActiveOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.snooze(scheduled));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.activeOccurrenceKey());
+  TEST_ASSERT_TRUE(engine.update(sample(27620, 2026, 9, 16, 258, 3, 7, 40)));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.activeOccurrenceKey());
+}
+
+void testHardwareBlockedOccurrenceAndChangedTime() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  engine.setHardwareAllowed(false);
+  TEST_ASSERT_FALSE(engine.update(sample(27020, 2026, 9, 16, 258, 3, 7, 30)));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.lastHandledOccurrenceKey());
+  engine.setHardwareAllowed(true);
+  TEST_ASSERT_FALSE(engine.update(sample(27040, 2026, 9, 16, 258, 3, 7, 30)));
+  TEST_ASSERT_TRUE(engine.setConfig(enabledConfig(17, 0)));
+  TEST_ASSERT_TRUE(engine.update(sample(61220, 2026, 9, 16, 258, 3, 17, 0)));
+}
+
+void testNextDaySameTimeRings() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  const auto first = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(first));
+  TEST_ASSERT_TRUE(engine.stop(first));
+  TEST_ASSERT_TRUE(engine.update(sample(113420, 2026, 9, 17, 259, 4, 7, 30)));
+}
+
+void testMatchingMinuteIsSecondIndependent() {
+  const std::int64_t seconds[] = {27000, 27001, 27020, 27059};
+  for (const std::int64_t second : seconds) {
+    alarmclock::AlarmEngine engine(enabledConfig());
+    TEST_ASSERT_TRUE(engine.update(sample(second, 2026, 9, 16, 258, 3, 7, 30)));
+    TEST_ASSERT_TRUE(engine.stop(sample(second, 2026, 9, 16, 258, 3, 7, 30)));
+    TEST_ASSERT_FALSE(engine.update(sample(27059, 2026, 9, 16, 258, 3, 7, 30)));
+  }
+}
+
+void testWrongMinuteAndWeekdayDoNotRing() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  TEST_ASSERT_FALSE(engine.update(sample(26940, 2026, 9, 16, 258, 3, 7, 29)));
+  TEST_ASSERT_FALSE(engine.update(sample(27060, 2026, 9, 16, 258, 3, 7, 31)));
+  auto config = enabledConfig();
+  config.daysMask = 0x01;
+  TEST_ASSERT_TRUE(engine.setConfig(config));
+  TEST_ASSERT_FALSE(engine.update(sample(27020, 2026, 9, 16, 258, 3, 7, 30)));
+}
+
+void testSoftwareDisabledDoesNotConsumeOccurrence() {
+  auto config = enabledConfig();
+  config.softwareEnabled = false;
+  alarmclock::AlarmEngine engine(config);
+  TEST_ASSERT_FALSE(engine.update(sample(27020, 2026, 9, 16, 258, 3, 7, 30)));
+  TEST_ASSERT_EQUAL_INT64(0, engine.lastHandledOccurrenceKey());
+}
+
+void testHardwareOffWhileRingingResolvesScheduledOnly() {
+  alarmclock::AlarmEngine scheduled(enabledConfig());
+  const auto now = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(scheduled.update(now));
+  TEST_ASSERT_TRUE(scheduled.stop(now));
+  scheduled.setHardwareAllowed(false);
+  scheduled.setHardwareAllowed(true);
+  TEST_ASSERT_EQUAL_INT64(202609160730LL,
+                          scheduled.lastHandledOccurrenceKey());
+
+  alarmclock::AlarmEngine test(enabledConfig());
+  test.testRing(now);
+  TEST_ASSERT_TRUE(test.stop(now));
+  test.setHardwareAllowed(false);
+  TEST_ASSERT_EQUAL_INT64(0, test.lastHandledOccurrenceKey());
+}
+
+void testPersistenceRestoreBlocksOnlySameOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig(17, 0));
+  engine.restoreLastHandledOccurrenceKey(202609161700LL);
+  TEST_ASSERT_FALSE(engine.update(sample(61220, 2026, 9, 16, 258, 3, 17, 0)));
+  TEST_ASSERT_TRUE(engine.setConfig(enabledConfig(18, 0)));
+  TEST_ASSERT_TRUE(engine.update(sample(64820, 2026, 9, 16, 258, 3, 18, 0)));
+}
+
+void testResetOccurrenceReenablesOnlyThatOccurrence() {
+  alarmclock::AlarmEngine engine(enabledConfig());
+  engine.restoreLastHandledOccurrenceKey(202609160730LL);
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_FALSE(engine.update(scheduled));
+  engine.restoreLastHandledOccurrenceKey(0);
   TEST_ASSERT_TRUE(engine.update(scheduled));
 }
 
-void testDisableAndHardwareDisallowStopActivity() {
+void testTestRingUsesTestOriginAndNoActiveOccurrence() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample now = sample(1000, 2026, 20, 1, 7, 30);
-  TEST_ASSERT_TRUE(engine.update(now));
+  engine.testRing(sample(1, 2026, 9, 16, 258, 3, 6, 0));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmOrigin::Test),
+                        static_cast<int>(engine.origin()));
+  TEST_ASSERT_EQUAL_INT64(0, engine.activeOccurrenceKey());
+}
+
+void testSnoozeDeadlineUsesConfiguredMinutes() {
+  auto config = enabledConfig();
+  config.snoozeMinutes = 5;
+  alarmclock::AlarmEngine engine(config);
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.snooze(scheduled));
+  TEST_ASSERT_EQUAL_INT64(27320, engine.snoozeDeadline());
+}
+
+void testHardwareOffUnrelatedMinuteDoesNotConsume() {
+  alarmclock::AlarmEngine engine(enabledConfig());
   engine.setHardwareAllowed(false);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Disabled),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_FALSE(engine.update(now));
-  engine.setHardwareAllowed(true);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
-                        static_cast<int>(engine.state()));
-
-  alarmclock::AlarmConfig disabled = enabledConfig();
-  disabled.softwareEnabled = false;
-  TEST_ASSERT_TRUE(engine.setConfig(disabled));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Disabled),
-                        static_cast<int>(engine.state()));
+  TEST_ASSERT_FALSE(engine.update(sample(26999, 2026, 9, 16, 258, 3, 7, 29)));
+  TEST_ASSERT_EQUAL_INT64(0, engine.lastHandledOccurrenceKey());
 }
 
-void testHardwareBlockedOccurrenceIsConsumedAndDoesNotReplay() {
+void testChangingVolumeDoesNotClearHandledOccurrence() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  const int32_t mondayDayKey = 2026 * 366 + 20;
-  engine.setHardwareAllowed(false);
-  TEST_ASSERT_FALSE(engine.update(sample(7 * 3600 + 29 * 60 + 59, 2026, 20, 1,
-                                         7, 29)));
-  TEST_ASSERT_EQUAL_INT32(std::numeric_limits<std::int32_t>::min(),
-                          engine.lastHandledDayKey());
-  TEST_ASSERT_FALSE(engine.update(
-      sample(7 * 3600 + 30 * 60 + 20, 2026, 20, 1, 7, 30)));
-  TEST_ASSERT_EQUAL_INT32(mondayDayKey, engine.lastHandledDayKey());
-
-  engine.setHardwareAllowed(true);
-  TEST_ASSERT_FALSE(engine.update(
-      sample(7 * 3600 + 30 * 60 + 40, 2026, 20, 1, 7, 30)));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_TRUE(engine.update(
-      sample(24 * 3600 + 7 * 3600 + 30 * 60, 2026, 21, 2, 7, 30)));
+  engine.restoreLastHandledOccurrenceKey(202609160730LL);
+  auto config = engine.config();
+  config.volume = 10;
+  TEST_ASSERT_TRUE(engine.setConfig(config));
+  TEST_ASSERT_EQUAL_INT64(202609160730LL, engine.lastHandledOccurrenceKey());
 }
 
-void testAllDaysMaskIncludesEveryWeekday() {
-  for (int wday = 0; wday < 7; ++wday) {
-    alarmclock::AlarmConfig config = enabledConfig();
-    config.daysMask = 0x7F;
-    alarmclock::AlarmEngine engine(config);
-    TEST_ASSERT_TRUE(engine.update(sample(1000 + wday, 2026, 30 + wday, wday,
-                                          7, 30)));
-  }
-}
-
-void testInvalidConfigurationDoesNotMutateEngine() {
+void testInvalidSampleDoesNotTriggerSnoozedAlarm() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  TEST_ASSERT_FALSE(engine.setConfig(alarmclock::AlarmConfig(true, 24, 0, 1, 1, 1)));
-  TEST_ASSERT_EQUAL_UINT8(7, engine.config().hour);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Armed),
-                        static_cast<int>(engine.state()));
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.snooze(scheduled));
+  TEST_ASSERT_FALSE(engine.update(sample(27620, 2026, 9, 16, 258, 3, 7, 40,
+                                         false)));
 }
 
-void testTestRingContinuesWhileSoftwareDisabledUntilStop() {
-  alarmclock::AlarmEngine engine;
-  const alarmclock::ClockSample invalid;
-  TEST_ASSERT_FALSE(engine.snooze(invalid));
-  engine.testRing(invalid);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_FALSE(engine.snooze(invalid));
-  TEST_ASSERT_FALSE(engine.update(invalid));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
-                        static_cast<int>(engine.state()));
-  TEST_ASSERT_TRUE(engine.stop(invalid));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Disabled),
-                        static_cast<int>(engine.state()));
-}
-
-void testTestRingAlwaysObeysHardwareGate() {
-  alarmclock::AlarmEngine engine;
-  const alarmclock::ClockSample invalid;
-  engine.setHardwareAllowed(false);
-  engine.testRing(invalid);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Disabled),
-                        static_cast<int>(engine.state()));
-  engine.setHardwareAllowed(true);
-  engine.testRing(invalid);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Ringing),
-                        static_cast<int>(engine.state()));
-  engine.setHardwareAllowed(false);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmState::Disabled),
-                        static_cast<int>(engine.state()));
-}
-
-void testRestoreLastHandledDayKeyDeduplicatesSchedule() {
+void testScheduledStopClearsOriginAndActiveOccurrence() {
   alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample monday = sample(1000, 2026, 10, 1, 7, 30);
-  engine.restoreLastHandledDayKey(2026 * 366 + 10);
-  TEST_ASSERT_EQUAL_INT32(2026 * 366 + 10, engine.lastHandledDayKey());
-  TEST_ASSERT_FALSE(engine.update(monday));
-  TEST_ASSERT_TRUE(engine.update(sample(2000, 2026, 11, 2, 7, 30)));
+  const auto scheduled = sample(27020, 2026, 9, 16, 258, 3, 7, 30);
+  TEST_ASSERT_TRUE(engine.update(scheduled));
+  TEST_ASSERT_TRUE(engine.stop(scheduled));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmOrigin::None),
+                        static_cast<int>(engine.origin()));
+  TEST_ASSERT_EQUAL_INT64(0, engine.activeOccurrenceKey());
 }
 
-void testResetHandledDayReenablesScheduledRing() {
-  alarmclock::AlarmEngine engine(enabledConfig());
-  const alarmclock::ClockSample monday = sample(1000, 2026, 10, 1, 7, 30);
-  engine.restoreLastHandledDayKey(2026 * 366 + 10);
-  TEST_ASSERT_FALSE(engine.update(monday));
-  engine.restoreLastHandledDayKey(std::numeric_limits<std::int32_t>::min());
-  TEST_ASSERT_TRUE(engine.update(monday));
+void testSerialParserCompatibility() {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmSerialCommandType::ResetHandledDay),
+                        static_cast<int>(alarmclock::parseAlarmSerialCommand("alarm reset-day").type));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(alarmclock::AlarmSerialCommandType::SetSnoozeMinutes),
+                        static_cast<int>(alarmclock::parseAlarmSerialCommand("alarm snooze-min 10").type));
 }
 
-
-void assertCommand(const char* text, alarmclock::AlarmSerialCommandType type,
-                    int hour = 0, int minute = 0, int mask = 0,
-                    int snoozeMinutes = 0) {
-  const alarmclock::AlarmSerialCommand command = alarmclock::parseAlarmSerialCommand(text);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(type), static_cast<int>(command.type));
-  TEST_ASSERT_EQUAL_UINT8(hour, command.hour);
-  TEST_ASSERT_EQUAL_UINT8(minute, command.minute);
-  TEST_ASSERT_EQUAL_UINT8(mask, command.daysMask);
-  TEST_ASSERT_EQUAL_UINT8(snoozeMinutes, command.snoozeMinutes);
-}
-
-void testSerialParserAcceptsExactCommands() {
-  assertCommand("alarm", alarmclock::AlarmSerialCommandType::Status);
-  assertCommand("alarm on", alarmclock::AlarmSerialCommandType::Enable);
-  assertCommand("alarm off", alarmclock::AlarmSerialCommandType::Disable);
-  assertCommand("alarm set 0 0", alarmclock::AlarmSerialCommandType::SetTime, 0, 0);
-  assertCommand("alarm set 07 05", alarmclock::AlarmSerialCommandType::SetTime, 7, 5);
-  assertCommand("alarm set 23 59", alarmclock::AlarmSerialCommandType::SetTime, 23,
-                59);
-  assertCommand("alarm days 1111100", alarmclock::AlarmSerialCommandType::SetDays,
-                0, 0, 0x1F);
-  assertCommand("alarm days 0000001", alarmclock::AlarmSerialCommandType::SetDays,
-                0, 0, 0x40);
-  assertCommand("alarm test", alarmclock::AlarmSerialCommandType::Test);
-  assertCommand("alarm snooze", alarmclock::AlarmSerialCommandType::Snooze);
-  assertCommand("alarm stop", alarmclock::AlarmSerialCommandType::Stop);
-  assertCommand("alarm reset-day",
-                alarmclock::AlarmSerialCommandType::ResetHandledDay);
-  assertCommand("alarm snooze-min 1",
-                alarmclock::AlarmSerialCommandType::SetSnoozeMinutes, 0, 0,
-                0, 1);
-  assertCommand("alarm snooze-min 60",
-                alarmclock::AlarmSerialCommandType::SetSnoozeMinutes, 0, 0,
-                0, 60);
-}
-
-void testSerialParserRejectsMalformedCommands() {
-  const char* invalid[] = {
-      "", " alarm", "alarm ", "alarm  on", "alarm ON", "alarm set",
-      "alarm set  7 5", "alarm set 7  5", "alarm set 7 5 ",
-      "alarm set 007 5", "alarm set 7 005", "alarm set 24 0",
-      "alarm set 0 60", "alarm set -1 0", "alarm set a 0",
-      "alarm days 0000000", "alarm days 111110", "alarm days 11111000",
-       "alarm days 11111x0", "alarm days 1111100 ", "alarm unknown",
-       "alarm reset", "alarm reset-day ", "alarm resetday",
-       "alarm snooze-min", "alarm snooze-min ", "alarm snooze-min 0",
-       "alarm snooze-min 61", "alarm snooze-min -1", "alarm snooze-min 1 ",
-  };
-  for (const char* text : invalid) {
-    assertCommand(text, alarmclock::AlarmSerialCommandType::Invalid);
-  }
-  assertCommand(nullptr, alarmclock::AlarmSerialCommandType::Invalid);
-}
-
-}
+}  // namespace
 
 void setUp() {}
 void tearDown() {}
@@ -421,28 +275,29 @@ void tearDown() {}
 int main() {
   UNITY_BEGIN();
   RUN_TEST(testConfigDefaultsAndValidation);
-  RUN_TEST(testSettingsJsonDefaultsRoundtrip);
-  RUN_TEST(testSettingsJsonNondefaultRoundtrip);
-  RUN_TEST(testSettingsJsonRejectsMalformedAndPartialWithoutMutation);
-  RUN_TEST(testSettingsJsonRejectsInvalidValuesAndTypes);
-  RUN_TEST(testSettingsJsonAllowsUnrelatedTopLevelFieldsAndOrder);
-  RUN_TEST(testWeekdayOffsetsUseMondayFirstMask);
-  RUN_TEST(testScheduledAlarmTriggersOnceWithoutSecondDependency);
-  RUN_TEST(testScheduledAlarmTriggersOnceAcrossWholeMatchingMinute);
-  RUN_TEST(testScheduleRequiresValidSelectedLocalTime);
-  RUN_TEST(testSnoozeUsesAbsoluteDeadlineAndRerings);
-  RUN_TEST(testRealStopMarksValidDayAndTestStopDoesNot);
-  RUN_TEST(testExplicitTestRingDoesNotConsumeLaterScheduledOccurrence);
-  RUN_TEST(testSnoozedExplicitTestRingDoesNotConsumeLaterScheduledOccurrence);
-  RUN_TEST(testDisableAndHardwareDisallowStopActivity);
-  RUN_TEST(testHardwareBlockedOccurrenceIsConsumedAndDoesNotReplay);
-  RUN_TEST(testAllDaysMaskIncludesEveryWeekday);
-  RUN_TEST(testInvalidConfigurationDoesNotMutateEngine);
-  RUN_TEST(testTestRingContinuesWhileSoftwareDisabledUntilStop);
-  RUN_TEST(testTestRingAlwaysObeysHardwareGate);
-  RUN_TEST(testRestoreLastHandledDayKeyDeduplicatesSchedule);
-  RUN_TEST(testResetHandledDayReenablesScheduledRing);
-  RUN_TEST(testSerialParserAcceptsExactCommands);
-  RUN_TEST(testSerialParserRejectsMalformedCommands);
+  RUN_TEST(testOccurrenceKeyUsesLocalCivilDate);
+  RUN_TEST(testSettingsOccurrenceRoundtrip64Bit);
+  RUN_TEST(testLegacyDayKeyDoesNotBlockSchedule);
+  RUN_TEST(testNormalOccurrenceRingsAtTwentySeconds);
+  RUN_TEST(testStopHandlesOnlyExactOccurrence);
+  RUN_TEST(testSameDayAlarmTimeChangeRings);
+  RUN_TEST(testTestStopDoesNotPoisonRealSchedule);
+  RUN_TEST(testTestSnoozeLifecycleDoesNotPoisonRealSchedule);
+  RUN_TEST(testScheduledSnoozePreservesActiveOccurrence);
+  RUN_TEST(testHardwareBlockedOccurrenceAndChangedTime);
+  RUN_TEST(testNextDaySameTimeRings);
+  RUN_TEST(testMatchingMinuteIsSecondIndependent);
+  RUN_TEST(testWrongMinuteAndWeekdayDoNotRing);
+  RUN_TEST(testSoftwareDisabledDoesNotConsumeOccurrence);
+  RUN_TEST(testHardwareOffWhileRingingResolvesScheduledOnly);
+  RUN_TEST(testPersistenceRestoreBlocksOnlySameOccurrence);
+  RUN_TEST(testResetOccurrenceReenablesOnlyThatOccurrence);
+  RUN_TEST(testTestRingUsesTestOriginAndNoActiveOccurrence);
+  RUN_TEST(testSnoozeDeadlineUsesConfiguredMinutes);
+  RUN_TEST(testHardwareOffUnrelatedMinuteDoesNotConsume);
+  RUN_TEST(testChangingVolumeDoesNotClearHandledOccurrence);
+  RUN_TEST(testInvalidSampleDoesNotTriggerSnoozedAlarm);
+  RUN_TEST(testScheduledStopClearsOriginAndActiveOccurrence);
+  RUN_TEST(testSerialParserCompatibility);
   return UNITY_END();
 }

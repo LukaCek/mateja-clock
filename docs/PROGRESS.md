@@ -2,6 +2,27 @@
 
 ## 2026-09-16 - Phase 5 Complete: CYD P3 Link + Alarm Regression Fixed
 
+### Follow-up: exact scheduled occurrences
+
+- Replaced the day-wide handled-alarm suppression with a 64-bit exact local
+  occurrence identity: `YYYYMMDDHHMM`, using the same Europe/Ljubljana civil
+  date as scheduling. For example, 16 September 2026 at 19:00 is
+  `202609161900`.
+- The engine now has exactly three runtime states (`Armed`, `Ringing`,
+  `Snoozed`) and an independent origin (`None`, `Scheduled`, `Test`). Software
+  enablement and the physical hardware gate remain independent gates rather
+  than runtime states.
+- A scheduled ring carries its original active occurrence through Snooze. Stop,
+  physical switch-off, or an explicit hardware-blocked matching minute resolves
+  only that occurrence. Test alarms never write a handled occurrence.
+- Settings now persist `handled_occurrence` as an explicit 64-bit integer.
+  Legacy day-only settings load their alarm configuration but intentionally
+  restore no handled occurrence because a day key cannot be safely converted.
+- Hardware acceptance passed without `!alarm reset-day`: the 19:00 occurrence
+  rang and stopped as `202609161900`; Alarm Settings then saved a different
+  19:27 time on the same local date, which rang and stopped as
+  `202609161927`. The first key did not suppress the second occurrence.
+
 - Migrated the production CYD `RtcLinkService` from the old newline protocol to
   the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
   TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters

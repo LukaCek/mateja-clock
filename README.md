@@ -97,7 +97,7 @@ The alarm always outranks messages: it never shows a popup, and a ringing alarm 
 
 Tap the bottom-right alarm control to open the Slovenian settings screen. Toggle the enable switch, wrap hour/minute with `+`/`−`, select weekdays with the P–N buttons, and press `Shrani` to save. Settings persist to `/clock/config/settings.json` on the SD card with a `.tmp`/`.bak` recovery scheme.
 
-At the configured time the clock shows `Dobro jutro ♥` with the alarm clock time and plays `/clock/audio/alarm.wav`. Press **Dremež +10 min** to snooze (re-rings after 10 minutes) or **Ugasni** to stop. Stopping keeps the alarm enabled, and the same-day alarm can only fire once; a debug `!alarm reset-day` re-enables it.
+At the configured time the clock shows `Dobro jutro ♥` with the alarm clock time and plays `/clock/audio/alarm.wav`. Press **Dremež +10 min** to snooze (re-rings after 10 minutes) or **Ugasni** to stop. Stopping keeps the alarm enabled and resolves that exact local scheduled occurrence (local date plus configured HH:MM). A later alarm-time edit on the same day produces a different occurrence and can ring normally. A debug `!alarm reset-day` clears the handled occurrence for an immediate re-test.
 
 The audio path is the internal DAC on GPIO26 feeding the CYD amplifier. Only the left DAC channel is enabled so the touch clock pin (GPIO25) stays free. Software volume maps 0–100 to library level 0–11 to avoid amplifier clipping/hum; full idle silence is restored after Stop. Exactly one alarm is supported.
 
@@ -133,7 +133,7 @@ Serial test commands require the `!` prefix and Enter:
 | `!alarm test` | Audition the ring immediately |
 | `!alarm snooze` | Snooze an active ring |
 | `!alarm stop` | Stop an active ring |
-| `!alarm reset-day` | Debug: clear the once-per-day flag so the alarm can ring again today |
+| `!alarm reset-day` | Debug: clear the handled occurrence so it can be re-tested |
 | `!wavraw BYTES` | Upload a WAV over serial after the `WAVREADY` prompt |
 | `!q` / `!Q` / `!s` / `!i` | Audio diagnostics: 6-stage, focused tone, sweep, WAV header scan |
 | `!h` | Print command help |

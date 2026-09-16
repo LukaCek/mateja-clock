@@ -361,10 +361,13 @@ void handlePhysicalInputs() {
         // Switch OFF: first resolve the current occurrence while the gate still
         // allows stop() to run, stop audio and return to Home, then close the
         // physical gate. Never touch the stored config (time/days/enable).
-        if (screenMode == ScreenMode::Ringing) {
+        if (alarmService.state() == alarmclock::AlarmState::Ringing ||
+            alarmService.state() == alarmclock::AlarmState::Snoozed) {
           alarmService.stop(clockTime.snapshot());
           alarmAudio.stop();
-          showHome();
+          if (screenMode == ScreenMode::Ringing) {
+            showHome();
+          }
         }
         alarmService.setHardwareAllowed(false);
         Serial.println("[INPUT] switch=off alarms_blocked");

@@ -53,13 +53,13 @@ The active card additionally contains:
 
 `/clock/audio/alarm.wav` is the ringing sound. It must be mono, 16-bit, 22050 Hz PCM WAV; the nine deployed rings are 20 seconds (882,000 data bytes). Deploy over serial with `tools/deploy_alarm_wav_serial.py --wav alarm_output/alarm.wav`, which waits for the firmware `WAVREADY` prompt and sends a CRC-verified upload. The firmware plays exactly `/clock/audio/alarm.wav`; the companion `alarm_1.wav`...`alarm_7.wav` files are spare rings for later selection.
 
-`/clock/config/settings.json` is created and owned by the firmware. It stores the alarm config and the last handled day key:
+`/clock/config/settings.json` is created and owned by the firmware. It stores the alarm config and the last handled local scheduled occurrence (local date plus configured HH:MM):
 
 ```json
-{"version":1,"alarm":{"enabled":true,"hour":20,"minute":45,"daysMask":127,"snoozeMinutes":10,"volume":85},"lastHandledDayKey":741741}
+{"version":1,"alarm":{"enabled":true,"hour":20,"minute":45,"daysMask":127,"snoozeMinutes":10,"volume":85},"handled_occurrence":202609162045}
 ```
 
-Writes go through `settings.tmp` with verification, a `.bak` backup, and rename. If the primary file is unreadable at boot the firmware tries the backup, and if neither loads it falls back to defaults without hanging the clock.
+Writes go through `settings.tmp` with verification, a `.bak` backup, and rename. Legacy `lastHandledDayKey` files are accepted for their alarm configuration, but their day-only value is ignored because it cannot identify a safe exact occurrence. If the primary file is unreadable at boot the firmware tries the backup, and if neither loads it falls back to defaults without hanging the clock.
 
 ## Phase 4 Addition
 
