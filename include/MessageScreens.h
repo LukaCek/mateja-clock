@@ -36,8 +36,8 @@ class MessagePopup {
   std::size_t messageIndex_ = 0;
   uint32_t shownAtMs_ = 0;
   static constexpr uint16_t kPopupDurationMs = 4500;
-  static constexpr int16_t kPopupHeight = 44;
-  static constexpr int16_t kPopupY = 196;  // 240 - 44
+  static constexpr int16_t kPopupHeight = 68;
+  static constexpr int16_t kPopupY = 108;
 };
 
 // Scrollable list of recent messages (newest first). Returns an OpenDetail
@@ -67,9 +67,8 @@ class MessagesListScreen {
   const TimeService& time_;
   std::size_t selectedIndex_ = 0;
   std::size_t scrollOffset_ = 0;
-  static constexpr std::size_t kVisibleRows = 7;
-  static constexpr int16_t kRowHeight = 28;
-  static constexpr int16_t kHeaderHeight = 18;
+  static constexpr std::size_t kVisibleRows = 3;
+  static constexpr int16_t kHeaderHeight = 38;
 };
 
 // Full-screen detail view of a single message. Returns Back when the
