@@ -14,6 +14,7 @@
 #include "AlarmScreens.h"
 #include "AlarmService.h"
 #include "BrightnessService.h"
+#include "EmojiService.h"
 #include "HomeScreen.h"
 #include "MessageScreens.h"
 #include "MessageService.h"
@@ -71,6 +72,8 @@ WavUploader wavUploader;
 
 constexpr char kWavPath[] = "/clock/audio/alarm.wav";
 uint32_t wavPendingBytes = 0;
+char uploadPath[64] = {0};
+uint32_t uploadPendingBytes = 0;
 bool sdIsMounted = false;
 HomeScreen homeScreen(display, unicodeText, photos, clockTime, messageService,
                       alarmService);
@@ -81,6 +84,7 @@ MessagesListScreen messagesListScreen(display, unicodeText, messageService,
                                       clockTime);
 MessageDetailScreen messageDetail(display, unicodeText, messageService,
                                   clockTime);
+EmojiService emojiService(display);
 
 enum class ScreenMode : uint8_t {
   Home,
@@ -514,7 +518,7 @@ void printCommands() {
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
       "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy, !rtc [sync], "
-      "!c3, !c3 ping");
+      "!c3, !c3 ping, !emoji");
 }
 
 void refreshHomeIfVisible() {
@@ -873,6 +877,29 @@ void executeCommand(const char* command) {
                             : "none");
     return;
   }
+  if (strcmp(command, "emoji") == 0) {
+    // Diagnostic: render test emojis
+    if (sdIsMounted) {
+      SD.mkdir("/emoji");
+      SD.mkdir("/emoji/32");
+      SD.mkdir("/emoji/48");
+    }
+    constexpr uint16_t kBg = 0x1082;
+    constexpr uint16_t kY = 60;
+    display.fillRect(0, 48, 320, 160, kBg);
+    Serial.println("[EMOJI] test rendering...");
+    struct { const char* ch; int16_t x; } tests[] = {
+        {"❤", 10},  {"😊", 70},  {"🥰", 130},  {"😘", 190},  {"👍", 250},
+    };
+    for (auto& t : tests) {
+      if (emojiService.draw(t.ch, t.x, kY, 48)) {
+        Serial.printf("[EMOJI] OK %s\n", t.ch);
+      }
+      yield();
+    }
+    Serial.println("[EMOJI] test complete");
+    return;
+  }
   if (strncmp(command, "alarm", 5) == 0) {
     executeAlarmCommand(command);
     return;
@@ -917,6 +944,36 @@ void executeCommand(const char* command) {
     } else {
       Serial.println("[BRIGHTNESS] invalid value");
     }
+    return;
+  }
+  if (strncmp(command, "putfile ", 8) == 0) {
+    // !putfile <path> <byteCount>
+    const char* pathArg = command + 8;
+    const char* space = std::strchr(pathArg, ' ');
+    if (space != nullptr && space > pathArg) {
+      unsigned long byteCount = 0;
+      if (parseUnsigned(space + 1, 128UL * 1024UL, byteCount) && byteCount > 0) {
+        const size_t pathLen = static_cast<size_t>(space - pathArg);
+        if (pathLen < sizeof(uploadPath)) {
+          std::memcpy(uploadPath, pathArg, pathLen);
+          uploadPath[pathLen] = '\0';
+          uploadPendingBytes = static_cast<uint32_t>(byteCount);
+          drainSerial();
+          Serial.printf("FILEREADY %lu\n", byteCount);
+          Serial.flush();
+          return;
+        }
+      }
+    }
+  }
+  if (strncmp(command, "mkdir ", 6) == 0 && command[6] != '\0') {
+    if (sdIsMounted) {
+      Serial.printf(SD.mkdir(command + 6) ? "[MKDIR] created %s\n" : "[MKDIR] failed %s\n",
+                    command + 6);
+    } else {
+      Serial.println("[MKDIR] sd not available");
+    }
+    return;
   }
 }
 
@@ -1251,6 +1308,11 @@ void setup() {
   photoStartResult = photos.begin();
   sdIsMounted = photoStartResult != PhotoService::StartResult::kSdUnavailable;
   const bool sdMounted = sdIsMounted;
+  if (sdIsMounted) {
+    SD.mkdir("/emoji");
+    SD.mkdir("/emoji/32");
+    SD.mkdir("/emoji/48");
+  }
   alarmService.begin(sdMounted);
   messageService.begin(sdMounted);
   photos.setBottomGradient(true);
@@ -1327,6 +1389,46 @@ void loop() {
                   wavUploader.sourceMicros());
     printWavResult(result);
     showHome();
+    return;
+  }
+
+  if (uploadPendingBytes != 0) {
+    if (sdIsMounted) {
+      // Auto-create parent directory
+      char* lastSlash = std::strrchr(uploadPath, '/');
+      if (lastSlash != nullptr && lastSlash != uploadPath) {
+        *lastSlash = '\0';
+        SD.mkdir(uploadPath);
+        *lastSlash = '/';
+      }
+      File f = SD.open(uploadPath, FILE_WRITE);
+      if (f) {
+        uint8_t buf[512];
+        uint32_t remaining = uploadPendingBytes;
+        const uint32_t start = millis();
+        while (remaining > 0) {
+          const uint32_t count = min<uint32_t>(remaining, sizeof(buf));
+          const int32_t read = Serial.readBytes(buf, static_cast<int>(count));
+          if (read > 0) {
+            f.write(buf, static_cast<size_t>(read));
+            remaining -= static_cast<uint32_t>(read);
+          } else if (millis() - start > 10000) {
+            break;
+          }
+        }
+        f.close();
+        uint32_t duration = millis() - start;
+        Serial.printf("[FILE] received %u bytes to %s in %u ms\n",
+                      uploadPendingBytes, uploadPath, duration);
+      } else {
+        Serial.printf("[FILE] failed to open %s for writing\n", uploadPath);
+      }
+    } else {
+      Serial.println("[FILE] sd not available");
+    }
+    uploadPendingBytes = 0;
+    uploadPath[0] = '\0';
+    drainSerial();
     return;
   }
 
