@@ -101,6 +101,8 @@ At the configured time the clock shows `Dobro jutro ♥` with the current local 
 
 The audio path is the internal DAC on GPIO26 feeding the CYD amplifier. Only the left DAC channel is enabled so the touch clock pin (GPIO25) stays free. Software volume maps 0–100 to library level 0–11 to avoid amplifier clipping/hum; full idle silence is restored after Stop. Exactly one alarm is supported.
 
+Tap the top-left Home heart to blank only the display backlight. The clock, alarms, C3 link, SD, messages, and slideshow remain active. The first touch anywhere wakes the backlight at the saved manual brightness and is consumed; a ringing alarm wakes the display automatically.
+
 If `alarm.wav` is missing, the firmware falls back to a built-in melodic tone sequence.
 
 Serial test commands require the `!` prefix and Enter:

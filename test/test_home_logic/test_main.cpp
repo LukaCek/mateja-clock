@@ -196,6 +196,13 @@ void testSnoozeIndicatorTouchRequiresSnoozedState() {
   TEST_ASSERT_FALSE(home::isSnoozeIndicatorTouch(280, 136, true));
 }
 
+void testHomeHeartTouchRegion() {
+  TEST_ASSERT_TRUE(home::isHomeHeartTouch(0, 0));
+  TEST_ASSERT_TRUE(home::isHomeHeartTouch(38, 38));
+  TEST_ASSERT_FALSE(home::isHomeHeartTouch(39, 20));
+  TEST_ASSERT_FALSE(home::isHomeHeartTouch(20, 39));
+}
+
 void testAlarmOnParsesBoundaryTimes() {
   home::AlarmStatus status{false, 12, 34};
   TEST_ASSERT_TRUE(home::parseAlarmCommand("a on 00 00", status));
@@ -279,6 +286,7 @@ int main() {
   RUN_TEST(testUnreadBadgeFormattingChecksBufferSize);
   RUN_TEST(testSnoozeIndicatorVisibilityTracksAuthoritativeState);
   RUN_TEST(testSnoozeIndicatorTouchRequiresSnoozedState);
+  RUN_TEST(testHomeHeartTouchRegion);
   RUN_TEST(testAlarmStatusGatesAndDefaults);
   RUN_TEST(testAlarmOnParsesBoundaryTimes);
   RUN_TEST(testAlarmOffPreservesConfiguredTime);

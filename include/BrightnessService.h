@@ -7,7 +7,10 @@ class BrightnessService {
   void begin(uint8_t initialBrightness = 230);
   void update();
   void set(uint8_t brightness);
+  void blankScreen();
+  void wakeScreen();
   uint8_t value() const { return brightness_; }
+  bool screenBlanked() const { return screenBlanked_; }
   uint16_t ambientRaw() const { return ambientRaw_; }
   void printStatus() const;
 
@@ -17,4 +20,5 @@ class BrightnessService {
   uint16_t ambientRaw_ = 0;
   uint32_t lastSampleAt_ = 0;
   bool hasAmbientSample_ = false;
+  bool screenBlanked_ = false;
 };

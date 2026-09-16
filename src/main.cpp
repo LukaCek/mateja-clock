@@ -179,6 +179,10 @@ void showHome() {
 }
 
 void showRinging() {
+  if (brightness.screenBlanked()) {
+    brightness.wakeScreen();
+    Serial.println("[DISPLAY] wake alarm");
+  }
   screenMode = ScreenMode::Ringing;
   messagePopup.dismiss();
   const alarmclock::AlarmConfig& config = alarmService.config();
@@ -216,6 +220,11 @@ void showMessageDetail(std::size_t index) {
 }
 
 void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
+  if (brightness.screenBlanked()) {
+    brightness.wakeScreen();
+    Serial.println("[DISPLAY] wake touch");
+    return;
+  }
   if (screenMode == ScreenMode::Ringing) {
     const RingingScreen::Action action = ringingScreen.handleTap(x, y);
     if (action == RingingScreen::Action::Snooze &&
@@ -266,6 +275,12 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
     if (action == MessageDetailScreen::Action::Back) {
       showHome();
     }
+    return;
+  }
+
+  if (home::isHomeHeartTouch(x, y)) {
+    brightness.blankScreen();
+    Serial.println("[DISPLAY] blanked");
     return;
   }
 

@@ -121,6 +121,10 @@ bool isSnoozeIndicatorTouch(std::uint16_t x, std::uint16_t y, bool snoozed) {
   return snoozed && x >= 258 && x <= 311 && y >= 104 && y <= 135;
 }
 
+bool isHomeHeartTouch(std::uint16_t x, std::uint16_t y) {
+  return x <= 38 && y <= 38;
+}
+
 bool parseAlarmCommand(const char* command, AlarmStatus& status) {
   if (command == nullptr) {
     return false;

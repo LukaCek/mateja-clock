@@ -57,6 +57,22 @@
   flashlight measured raw 1021..1040, establishing higher-is-brighter polarity,
   but there is no safe threshold separating the actual room from darkness.
 
+### Follow-up: manual display blanking
+
+- Added a CYD-only manual display blank control on the existing Home heart.
+  It sets only GPIO21 backlight PWM to zero; the saved manual brightness is
+  retained and the CYD continues normal alarm, RTC, C3, SD, message, and
+  slideshow work.
+- The first touch while blanked restores the saved brightness and is consumed
+  before any message, Snooze, settings, or photo-navigation handling. A ringing
+  alarm wakes the display before drawing the Ringing UI.
+- Hardware validation set brightness to 120, blanked from the Home heart, then
+  tapped the Alarm Settings area twice: each tap logged only `[DISPLAY] wake
+  touch` and did not open Settings. A real DS1302-backed 21:14 alarm was armed
+  while blanked at 21:12; it logged `[DISPLAY] wake alarm`, displayed the
+  Ringing UI, and played WAV audio. The physical Snooze/re-ring path, C3 link,
+  and RTC fallback remained healthy.
+
 - Migrated the production CYD `RtcLinkService` from the old newline protocol to
   the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
   TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters

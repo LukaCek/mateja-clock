@@ -22,6 +22,7 @@ bool formatUnreadBadge(std::uint32_t unreadCount, char* output,
 // alarm state is Snoozed; otherwise this region remains normal photo navigation.
 bool snoozeIndicatorVisible(bool snoozed);
 bool isSnoozeIndicatorTouch(std::uint16_t x, std::uint16_t y, bool snoozed);
+bool isHomeHeartTouch(std::uint16_t x, std::uint16_t y);
 
 // Describes the alarm state shown on the Home screen. `softwareEnabled` comes
 // from the alarm settings; `hardwareAllowed` reflects the physical C3 alarm

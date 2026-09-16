@@ -24,11 +24,24 @@ void BrightnessService::update() {
 
 void BrightnessService::set(uint8_t brightness) {
   brightness_ = brightness;
+  if (!screenBlanked_) {
+    ledcWrite(kPwmChannel, brightness_);
+  }
+}
+
+void BrightnessService::blankScreen() {
+  screenBlanked_ = true;
+  ledcWrite(kPwmChannel, 0);
+}
+
+void BrightnessService::wakeScreen() {
+  screenBlanked_ = false;
   ledcWrite(kPwmChannel, brightness_);
 }
 
 void BrightnessService::printStatus() const {
-  Serial.printf("[BRIGHTNESS] value=%u ambient_raw=%u\n",
+  Serial.printf("[BRIGHTNESS] value=%u ambient_raw=%u blanked=%s\n",
                 static_cast<unsigned>(brightness_),
-                static_cast<unsigned>(ambientRaw_));
+                static_cast<unsigned>(ambientRaw_),
+                screenBlanked_ ? "yes" : "no");
 }
