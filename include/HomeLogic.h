@@ -17,6 +17,8 @@ bool formatSlovenianDate(int tmWday, int day, int tmMon, char* output,
                          std::size_t outputSize);
 bool formatUnreadBadge(std::uint32_t unreadCount, char* output,
                        std::size_t outputSize);
+bool formatVolumePercent(std::uint8_t percent, char* output,
+                         std::size_t outputSize);
 
 // Compact right-center Home control. It is active only while the authoritative
 // alarm state is Snoozed; otherwise this region remains normal photo navigation.

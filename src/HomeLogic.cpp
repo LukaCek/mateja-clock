@@ -125,6 +125,17 @@ bool isHomeHeartTouch(std::uint16_t x, std::uint16_t y) {
   return x <= 38 && y <= 38;
 }
 
+bool formatVolumePercent(std::uint8_t percent, char* output,
+                         std::size_t outputSize) {
+  clearOutput(output, outputSize);
+  if (output == nullptr || outputSize < 5) {
+    return false;
+  }
+  const int written = std::snprintf(output, outputSize, "%u%%",
+                                    static_cast<unsigned>(percent));
+  return written > 0 && static_cast<std::size_t>(written) < outputSize;
+}
+
 bool parseAlarmCommand(const char* command, AlarmStatus& status) {
   if (command == nullptr) {
     return false;

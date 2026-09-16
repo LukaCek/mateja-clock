@@ -265,6 +265,23 @@ void testRandomIndexIsDeterministicAndHandlesInvalidCurrent() {
   TEST_ASSERT_EQUAL_UINT32(4, home::chooseRandomIndex(5, 99, 9));
 }
 
+void testVolumePercentFormatting() {
+  char output[8];
+  TEST_ASSERT_TRUE(home::formatVolumePercent(0, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("0%", output);
+  TEST_ASSERT_TRUE(home::formatVolumePercent(68, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("68%", output);
+  TEST_ASSERT_TRUE(home::formatVolumePercent(100, output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("100%", output);
+}
+
+void testVolumePercentFormattingRejectsSmallBuffer() {
+  char small[4];
+  TEST_ASSERT_FALSE(home::formatVolumePercent(50, small, sizeof(small)));
+  TEST_ASSERT_EQUAL_STRING("", small);
+  TEST_ASSERT_FALSE(home::formatVolumePercent(0, nullptr, 0));
+}
+
 }  // namespace
 
 void setUp() {}
@@ -294,5 +311,7 @@ int main() {
   RUN_TEST(testRandomIndexHandlesZeroAndOne);
   RUN_TEST(testRandomIndexAvoidsCurrentAndStaysInRange);
   RUN_TEST(testRandomIndexIsDeterministicAndHandlesInvalidCurrent);
+  RUN_TEST(testVolumePercentFormatting);
+  RUN_TEST(testVolumePercentFormattingRejectsSmallBuffer);
   return UNITY_END();
 }

@@ -73,6 +73,20 @@
   Ringing UI, and played WAV audio. The physical Snooze/re-ring path, C3 link,
   and RTC fallback remained healthy.
 
+### Follow-up: live physical volume overlay
+
+- Added a compact coral volume overlay to Home and Ringing screens. It appears
+  on every accepted C3 potentiometer change, shows the current percentage and a
+  progress bar, and dismisses after approximately 1.5 seconds. Home restore
+  uses the existing safe full photo redraw; Ringing restores via the existing
+  time-region refresh. The overlay is suppressed while the display is manually
+  blanked.
+- Hardware validation turned the physical pot through full range on Home, during
+  an active test ring, and while the display was blanked. Volume updated
+  immediately in all three cases, WAV playback never restarted, and persistence
+  occurred after approximately 3 seconds of stability. The final persisted volume
+  matched the last stable potentiometer position.
+
 - Migrated the production CYD `RtcLinkService` from the old newline protocol to
   the framed `rtclink-common` binary protocol on P3 (`Serial1`, GPIO35 RX / GPIO22
   TX, 115200 8N1), decoupled from the CH340 USB console UART0. Rolling counters

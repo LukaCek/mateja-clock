@@ -99,6 +99,9 @@ ScreenMode screenMode = ScreenMode::Home;
 uint8_t lastVolume = 0xFF;  // 0xFF == unknown yet
 bool volumePersistPending = false;
 uint32_t volumeChangedAtMs = 0;
+bool volumeOverlayVisible = false;
+uint8_t volumeOverlayPercent = 0;
+uint32_t volumeOverlayStartMs = 0;
 bool lastSwitchOn = false;
 bool switchKnown = false;
 
@@ -369,6 +372,60 @@ void handleTouch() {
   handleTap(touchDownX, touchDownY, duration);
 }
 
+void drawVolumeOverlay() {
+  if (brightness.screenBlanked()) {
+    return;
+  }
+  const uint16_t bgColor =
+      (screenMode == ScreenMode::Ringing) ? 0x0841 : kFallbackBackground;
+  constexpr uint16_t kWarmWhite = 0xFF7B;
+  constexpr uint16_t kCoral = 0xEBAC;
+
+  // Home: upper-center photo region. Ringing: over the time region.
+  const int16_t x = 80;
+  const int16_t y = 55;
+  const int16_t width = 160;
+  const int16_t height = 38;
+
+  display.fillRoundRect(x, y, width, height, 8, bgColor);
+  display.drawRoundRect(x, y, width, height, 8, kCoral);
+
+  char label[8];
+  home::formatVolumePercent(volumeOverlayPercent, label, sizeof(label));
+  unicodeText.setFont(u8g2_font_helvB14_te);
+  unicodeText.setFontMode(1);
+  unicodeText.setForegroundColor(kWarmWhite);
+  unicodeText.drawUTF8(x + 10, y + 17, label);
+
+  // Progress bar
+  constexpr int16_t barX = x + 10;
+  constexpr int16_t barY = y + 24;
+  constexpr int16_t barWidth = width - 20;
+  constexpr int16_t barHeight = 6;
+  display.fillRoundRect(barX, barY, barWidth, barHeight, 3, 0x2104);
+  const int16_t fillWidth =
+      static_cast<int16_t>(barWidth * volumeOverlayPercent / 100);
+  if (fillWidth > 0) {
+    display.fillRoundRect(barX, barY, fillWidth, barHeight, 3, kCoral);
+  }
+
+  volumeOverlayVisible = true;
+  volumeOverlayStartMs = millis();
+}
+
+void dismissVolumeOverlay() {
+  if (!volumeOverlayVisible) {
+    return;
+  }
+  volumeOverlayVisible = false;
+  if (screenMode == ScreenMode::Home) {
+    homeScreen.refresh();
+  } else if (screenMode == ScreenMode::Ringing) {
+    const TimeService::Snapshot& now = clockTime.snapshot();
+    ringingScreen.refreshCurrentTime(now.valid, now.hour, now.minute);
+  }
+}
+
 // Reacts to the physical controls on the C3 coprocessor (pot, button, switch)
 // as framed frames arrive over the RTC link. Volume applies live and persists
 // only after stability; the switch toggles the hardware gate (never the stored
@@ -382,6 +439,12 @@ void handlePhysicalInputs() {
       volumeChangedAtMs = millis();
       volumePersistPending = true;
       Serial.printf("[INPUT] volume=%u\n", static_cast<unsigned>(volume));
+
+      if (!brightness.screenBlanked() &&
+          (screenMode == ScreenMode::Home || screenMode == ScreenMode::Ringing)) {
+        volumeOverlayPercent = volume;
+        drawVolumeOverlay();
+      }
     }
   }
 
@@ -1294,6 +1357,13 @@ void loop() {
   if (volumePersistPending && millis() - volumeChangedAtMs >= kVolumeStablePersistMs) {
     volumePersistPending = false;
     alarmService.setVolume(lastVolume);
+    Serial.printf("[VOLUME] persisted=%u\n", static_cast<unsigned>(lastVolume));
+  }
+
+  // Dismiss volume overlay after timeout.
+  if (volumeOverlayVisible &&
+      static_cast<uint32_t>(millis() - volumeOverlayStartMs) >= 1500) {
+    dismissVolumeOverlay();
   }
 
   const uint32_t now = millis();
