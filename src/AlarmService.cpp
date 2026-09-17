@@ -305,6 +305,10 @@ bool AlarmService::hardwareAllowed() const {
   return engine_.hardwareAllowed();
 }
 
+std::int64_t AlarmService::handledOccurrence() const {
+  return engine_.lastHandledOccurrenceKey();
+}
+
 bool AlarmService::resetHandledDay() {
   engine_.restoreLastHandledOccurrenceKey(0);
   const bool persisted = persistHandledOccurrenceKey();

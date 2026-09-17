@@ -136,9 +136,30 @@ Serial test commands require the `!` prefix and Enter:
 | `!alarm snooze` | Snooze an active ring |
 | `!alarm stop` | Stop an active ring |
 | `!alarm reset-day` | Debug: clear the handled occurrence so it can be re-tested |
+| `!gift-reset` | Clear all user/test state (messages, handled occurrence, Ringing/Snoozed); preserves all config and assets |
+| `!ls [dir]` | Read-only SD directory listing |
+| `!rmfile <path>` | Remove an obsolete emoji `.png` under `/emoji/` only (`.raw` blocked) |
 | `!wavraw BYTES` | Upload a WAV over serial after the `WAVREADY` prompt |
 | `!q` / `!Q` / `!s` / `!i` | Audio diagnostics: 6-stage, focused tone, sweep, WAV header scan |
 | `!h` | Print command help |
+
+## Gift / user-state reset
+
+Connect the clock over USB and run:
+
+```bash
+python3 tools/gift_reset.py
+```
+
+Confirm with `y` and wait for `Gift reset: PASS`.
+
+This invokes the firmware's `!gift-reset` command, which clears only user/test
+state: all local messages (read + unread), Ringing/Snoozed/test-alarm state, and
+the persisted handled occurrence. Wi-Fi, ntfy configuration, alarm settings
+(08:00, all days, 10 min snooze), volume, brightness, photos, RAW emoji assets,
+and RTC/C3 integration are all preserved. The ntfy stream checkpoint is kept so
+old retained messages are not replayed. Use `--yes` to skip the prompt and
+`--flash` to also rebuild + reflash the CYD first (requires a clean git tree).
 
 Alarm and volume, message store, and processed-id checkpoint are persisted to the SD card; demo `!b` brightness is not. Measured hardware performance and milestone details are recorded in `docs/PROGRESS.md`. The original 4 MB flash backup remains at `backups/cyd_original_flash.bin` with its checksum documented in `docs/HARDWARE.md`.
 

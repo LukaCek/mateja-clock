@@ -28,6 +28,7 @@ class AlarmService final : public AlarmStatusProvider {
   bool stop(const TimeService::Snapshot& snapshot);
   void setHardwareAllowed(bool allowed);
   bool hardwareAllowed() const;
+  std::int64_t handledOccurrence() const;
   bool resetHandledDay();
   void printStatus() const;
 

@@ -519,7 +519,7 @@ void printCommands() {
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
       "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy, !rtc [sync], "
-      "!c3, !c3 ping, !emoji");
+      "!c3, !c3 ping, !emoji, !gift-reset, !ls [dir], !rmfile <path>");
 }
 
 void refreshHomeIfVisible() {
@@ -819,6 +819,35 @@ void executeCommand(const char* command) {
         "!msg ack, !msg inject <text>");
     return;
   }
+  if (strncmp(command, "gift-reset", 10) == 0 &&
+      (command[10] == '\0' || command[10] == ' ')) {
+    // Clearing the persisted alarm/config state is NOT part of this command.
+    // It removes user/test state only:
+    //   - all local messages (read/unread/seen metadata lives inside the
+    //     store lines, so removing the store clears them together)
+    //   - any Ringing / Snoozed / test-alarm transient engine state
+    //   - the persisted handled_occurrence
+    // The ntfy checkpoint (processed.json) is preserved so the stream resumes
+    // after the last accepted message without replaying retained ones.
+    const bool messagesCleared = messageService.clearAll();
+    if (alarmService.state() == alarmclock::AlarmState::Ringing ||
+        alarmService.state() == alarmclock::AlarmState::Snoozed) {
+      alarmService.stop(clockTime.snapshot());
+    }
+    alarmAudio.stop();
+    const bool handledCleared = alarmService.resetHandledDay();
+    showHome();
+    const MessageStatus status = messageService.status();
+    Serial.printf(
+        "[GIFT_RESET] messages=%u unread=%u handled=%s state=%s origin=%s "
+        "messages_cleared=%s handled_cleared=%s\n",
+        static_cast<unsigned>(messageService.count()),
+        static_cast<unsigned>(status.unreadCount),
+        alarmService.handledOccurrence() == 0 ? "none" : "set",
+        "armed", "none", messagesCleared ? "yes" : "no",
+        handledCleared ? "yes" : "no");
+    return;
+  }
   if (strncmp(command, "ntfy", 4) == 0) {
     const char* rest = command + 4;
     if (*rest == '\0' || *rest == ' ') {
@@ -966,6 +995,65 @@ void executeCommand(const char* command) {
     } else {
       Serial.println("[MKDIR] sd not available");
     }
+    return;
+  }
+  if (strncmp(command, "ls", 2) == 0 &&
+      (command[2] == '\0' || command[2] == ' ')) {
+    if (!sdIsMounted) {
+      Serial.println("[LS] sd not available");
+      return;
+    }
+    const char* dirPath = (command[2] == ' ') ? command + 3 : "/";
+    File directory = SD.open(dirPath, FILE_READ);
+    if (!directory || !directory.isDirectory()) {
+      Serial.printf("[LS] open failed path=%s\n", dirPath);
+      if (directory) directory.close();
+      return;
+    }
+    uint16_t count = 0;
+    for (File entry = directory.openNextFile(); entry;
+         entry = directory.openNextFile()) {
+      char path[128];
+      const char* name = entry.name();
+      if (name[0] == '/') {
+        std::snprintf(path, sizeof(path), "%s", name);
+      } else if (std::strcmp(dirPath, "/") == 0) {
+        std::snprintf(path, sizeof(path), "/%s", name);
+      } else {
+        std::snprintf(path, sizeof(path), "%s/%s", dirPath, name);
+      }
+      if (entry.isDirectory()) {
+        Serial.printf("[LS] %s/\n", path);
+      } else {
+        Serial.printf("[LS] %s bytes=%u\n", path,
+                      static_cast<unsigned>(entry.size()));
+      }
+      entry.close();
+      ++count;
+    }
+    directory.close();
+    Serial.printf("[LS_END] dir=%s count=%u\n", dirPath,
+                  static_cast<unsigned>(count));
+    return;
+  }
+  if (strncmp(command, "rmfile ", 7) == 0 && command[7] != '\0') {
+    if (!sdIsMounted) {
+      Serial.println("[RMFILE] sd not available");
+      return;
+    }
+    const char* path = command + 7;
+    const std::size_t pathLength = std::strlen(path);
+    const bool emojiPath = pathLength > 7 &&
+                           std::strncmp(path, "/emoji/", 7) == 0;
+    const bool pngFile = pathLength > 4 &&
+                         std::strcmp(path + pathLength - 4, ".png") == 0;
+    if (!emojiPath || !pngFile) {
+      Serial.printf("[RMFILE] denied path=%s\n", path);
+      return;
+    }
+    Serial.printf(SD.remove(path) ? "[RMFILE] removed %s\n"
+                                  : "[RMFILE] failed path=%s\n",
+                  path);
     return;
   }
 }

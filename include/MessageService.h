@@ -51,6 +51,11 @@ class MessageService : public MessageStatusProvider {
   bool saveProcessedId(const char* id);
   bool resetProcessedId();  // drop the checkpoint: next stream resumes fresh
 
+  // Deletes all stored messages and the in-memory index. The ntfy checkpoint
+  // (lastProcessedId) is intentionally preserved so the stream resumes after
+  // the last accepted message and old retained messages are not replayed.
+  bool clearAll();
+
   // Index of the message with the given id, or -1.
   int indexOfId(const char* id) const;
 

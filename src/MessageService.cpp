@@ -301,6 +301,21 @@ bool MessageService::resetProcessedId() {
   return saveProcessedId(lastProcessedId_);
 }
 
+bool MessageService::clearAll() {
+  count_ = 0;
+  if (!sdMounted_) {
+    return false;
+  }
+  const char* filesToRemove[] = {kStorePath, kStoreTmpPath, kStoreBackupPath};
+  for (const char* path : filesToRemove) {
+    if (SD.exists(path) && !SD.remove(path)) {
+      Serial.printf("[MSG] clear failed to remove %s\n", path);
+      return false;
+    }
+  }
+  return true;
+}
+
 int MessageService::indexOfId(const char* id) const {
   if (id == nullptr) {
     return -1;
