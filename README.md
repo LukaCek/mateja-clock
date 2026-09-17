@@ -137,6 +137,9 @@ Serial test commands require the `!` prefix and Enter:
 | `!alarm stop` | Stop an active ring |
 | `!alarm reset-day` | Debug: clear the handled occurrence so it can be re-tested |
 | `!gift-reset` | Clear all user/test state (messages, handled occurrence, Ringing/Snoozed); preserves all config and assets |
+| `!gift-reset-full` | Wipe all NON-PHOTO SD content; preserves only `/clock/photos/` and the photo manifest |
+| `!msg processed <id>` | Restore the ntfy stream checkpoint (used by the host to avoid replaying retained messages) |
+| `!msg processed clear` | Clear the ntfy stream checkpoint (future messages start from latest) |
 | `!ls [dir]` | Read-only SD directory listing |
 | `!rmfile <path>` | Remove an obsolete emoji `.png` under `/emoji/` only (`.raw` blocked) |
 | `!wavraw BYTES` | Upload a WAV over serial after the `WAVREADY` prompt |
@@ -162,5 +165,37 @@ old retained messages are not replayed. Use `--yes` to skip the prompt and
 `--flash` to also rebuild + reflash the CYD first (requires a clean git tree).
 
 Alarm and volume, message store, and processed-id checkpoint are persisted to the SD card; demo `!b` brightness is not. Measured hardware performance and milestone details are recorded in `docs/PROGRESS.md`. The original 4 MB flash backup remains at `backups/cyd_original_flash.bin` with its checksum documented in `docs/HARDWARE.md`.
+
+## Full SD rebuild (destructive)
+
+For a complete SD rebuild that wipes all non-photo content and restores production assets from the repository:
+
+```bash
+python3 tools/gift_reset.py --full
+```
+
+You must type `FULL RESET` at the prompt to confirm. With `--yes` the prompt is skipped but a prominent warning is printed.
+
+What FULL mode preserves:
+- `/clock/photos/` (all Mateja photos, byte-identical set)
+- `/clock/manifest.json` (photo render manifest)
+
+What FULL mode deletes and then restores:
+- All messages and processed-id checkpoint (restored to the exact prior checkpoint after rebuild)
+- Alarm runtime history (cleared; alarm settings re-applied from what the clock had before the wipe)
+- SD config/state files
+- Emoji RAW assets (restored from `assets/sd/emoji/`)
+- Alarm audio (restored from `assets/sd/audio/alarm.wav`)
+- Temporary and recovery files (including `FSCK*.REC` fragments)
+
+What FULL mode never touches:
+- Flash contents (no firmware erase/reflash)
+- C3 coprocessor firmware or state
+- DS1302 RTC or display calibration
+- Wi-Fi/ntfy credentials (compiled into the firmware)
+
+Production assets are restored from `assets/sd/` in the repository (`assets/sd/emoji/32/*.raw`, `assets/sd/emoji/48/*.raw`, `assets/sd/audio/alarm.wav`). The script aborts immediately — without modifying the clock — if any of these assets are missing locally.
+
+Post-rebuild verification: photo set equality (must match byte-for-byte), messages == 0, unread == 0, ntfy checkpoint preserved, alarm state == armed with correct settings, all emoji present, alarm WAV restored, C3 connected, home screen displayed.
 
 The firmware targets the `huge_app.csv` partition (3 MB application, no OTA) because the audio library exceeds the default app partition.

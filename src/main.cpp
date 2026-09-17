@@ -15,6 +15,7 @@
 #include "AlarmService.h"
 #include "BrightnessService.h"
 #include "EmojiService.h"
+#include "FullReset.h"
 #include "HomeScreen.h"
 #include "MessageScreens.h"
 #include "MessageService.h"
@@ -518,8 +519,10 @@ void printCommands() {
       "[COMMANDS] !n !p !r photos, !t home test, !x failure test, "
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
-      "!msg [list|unread|read INDEX|ack|inject <text>], !ntfy, !rtc [sync], "
-      "!c3, !c3 ping, !emoji, !gift-reset, !ls [dir], !rmfile <path>");
+      "!msg [list|unread|read INDEX|ack|inject <text>|processed <id>|clear], "
+      "!ntfy, !rtc [sync], "
+      "!c3, !c3 ping, !emoji, !gift-reset, !gift-reset-full, "
+      "!ls [dir], !rmfile <path>");
 }
 
 void refreshHomeIfVisible() {
@@ -585,6 +588,81 @@ void printWavResult(WavUploader::Result result) {
       break;
   }
 }
+
+namespace {
+
+struct FullResetCounts {
+  unsigned long removed = 0;
+  unsigned long photosKept = 0;
+  unsigned long manifestKept = 0;
+};
+
+// Recursively delete every entry under 'directory' except fullreset-protected
+// paths. Returns true when protected content remains in the directory, so the
+// caller must not remove the directory itself.
+//
+// Deleting entries while a FAT directory iterator is active can skip adjacent
+// entries; survivors are swept by bounded follow-up passes.
+bool wipeSdDirectory(const char* directory, FullResetCounts& counts,
+                     int pass = 0) {
+  File handle = SD.open(directory, FILE_READ);
+  if (!handle || !handle.isDirectory()) {
+    if (handle) handle.close();
+    return false;
+  }
+  bool hasProtected = false;
+  bool removedAnyThisPass = false;
+  unsigned long yieldCounter = 0;
+  for (File entry = handle.openNextFile(); entry;
+       entry = handle.openNextFile()) {
+    // The delete sweep can run for many seconds; yield periodically so the
+    // task watchdog of the loop() task does not reset the board mid-wipe.
+    if ((++yieldCounter & 0x3F) == 0) {
+      delay(1);
+    }
+    char path[128];
+    const char* name = entry.name();
+    if (name[0] == '/') {
+      std::snprintf(path, sizeof(path), "%s", name);
+    } else if (std::strcmp(directory, "/") == 0) {
+      std::snprintf(path, sizeof(path), "/%s", name);
+    } else {
+      std::snprintf(path, sizeof(path), "%s/%s", directory, name);
+    }
+    if (fullreset::isProtectedPath(path)) {
+      hasProtected = true;
+      if (fullreset::isPhotoPath(path)) ++counts.photosKept;
+      if (fullreset::isManifestPath(path)) ++counts.manifestKept;
+      entry.close();
+      continue;
+    }
+    if (entry.isDirectory()) {
+      const bool childProtected = wipeSdDirectory(path, counts);
+      entry.close();
+      if (childProtected) {
+        hasProtected = true;
+      } else if (SD.rmdir(path)) {
+        ++counts.removed;
+        removedAnyThisPass = true;
+      } else {
+        hasProtected = true;
+      }
+      continue;
+    }
+    if (SD.remove(path)) {
+      ++counts.removed;
+      removedAnyThisPass = true;
+    }
+    entry.close();
+  }
+  handle.close();
+  if (removedAnyThisPass && !hasProtected && pass < 5) {
+    return wipeSdDirectory(directory, counts, pass + 1);
+  }
+  return hasProtected;
+}
+
+}  // namespace
 
 void executeAlarmCommand(const char* command) {
   const alarmclock::AlarmSerialCommand parsed =
@@ -814,9 +892,40 @@ void executeCommand(const char* command) {
       Serial.println("[MSGRO] invalid inject text");
       return;
     }
+    if (strncmp(command + 4, "processed", 9) == 0 &&
+        (command[13] == '\0' || command[13] == ' ')) {
+      if (command[13] == ' ') {
+        const char* rest = command + 14;
+        if (std::strcmp(rest, "clear") == 0) {
+          if (messageService.resetProcessedId()) {
+            Serial.println("[MSGRO] processed cleared");
+          } else {
+            Serial.println("[MSGRO] processed clear failed");
+          }
+          return;
+        }
+        const std::size_t idLength = std::strlen(rest);
+        bool printable = idLength > 0;
+        for (std::size_t index = 0; printable && index < idLength; ++index) {
+          const char value = rest[index];
+          if (value < 0x20 || value > 0x7E) {
+            printable = false;
+          }
+        }
+        if (printable && idLength < messagelogic::kMaxIdBytes &&
+            messageService.saveProcessedId(rest)) {
+          Serial.printf("[MSGRO] processed set id=%s\n", rest);
+        } else {
+          Serial.println("[MSGRO] processed set failed");
+        }
+        return;
+      }
+      messageService.printStatus();
+      return;
+    }
     Serial.println(
         "[MSGRO_CMD] usage: !msg, !msg list, !msg unread, !msg read INDEX, "
-        "!msg ack, !msg inject <text>");
+        "!msg ack, !msg inject <text>, !msg processed <id>|clear");
     return;
   }
   if (strncmp(command, "gift-reset", 10) == 0 &&
@@ -846,6 +955,29 @@ void executeCommand(const char* command) {
         alarmService.handledOccurrence() == 0 ? "none" : "set",
         "armed", "none", messagesCleared ? "yes" : "no",
         handledCleared ? "yes" : "no");
+    return;
+  }
+  if (strncmp(command, "gift-reset-full", 15) == 0 &&
+      (command[15] == '\0' || command[15] == ' ')) {
+    if (!sdIsMounted) {
+      Serial.println("[FULL_RESET] fail reason=sd");
+      return;
+    }
+    // Full reset is an SD rebuild only. Stop alarm audio and resolve any
+    // transient ringing state; flash, C3, RTC and calibration are untouched.
+    if (alarmService.state() == alarmclock::AlarmState::Ringing ||
+        alarmService.state() == alarmclock::AlarmState::Snoozed) {
+      alarmService.stop(clockTime.snapshot());
+    }
+    alarmAudio.stop();
+    FullResetCounts counts;
+    wipeSdDirectory("/", counts);
+    refreshHomeIfVisible();
+    Serial.printf(
+        "[FULL_RESET] removed=%lu kept=%lu photos_kept=%lu "
+        "manifest_kept=%lu\n",
+        counts.removed, counts.photosKept + counts.manifestKept,
+        counts.photosKept, counts.manifestKept);
     return;
   }
   if (strncmp(command, "ntfy", 4) == 0) {
