@@ -259,6 +259,7 @@ void handleTap(uint16_t x, uint16_t y, uint32_t duration) {
         Serial.println("[ALARM] settings save failed");
       }
     } else {
+      alarmSettings.startRepeatTracking(millis());
       alarmSettings.draw();
     }
     return;
@@ -1428,6 +1429,16 @@ void loop() {
   rtcLink.update();
   handlePhysicalInputs();
   handleTouch();
+  // Hold-to-repeat for Alarm Settings time buttons.
+  if (screenMode == ScreenMode::AlarmSettings) {
+    const uint32_t now = millis();
+    if (touchIsStable) {
+      alarmSettings.checkRepeatStart(touchDownX, touchDownY, now);
+      alarmSettings.handleRepeat(true, touchDownX, touchDownY, now);
+    } else {
+      alarmSettings.handleRepeat(false, 0, 0, now);
+    }
+  }
   brightness.update();
   alarmAudio.update();
 

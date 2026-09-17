@@ -71,7 +71,9 @@ AlarmSettingsScreen::AlarmSettingsScreen(
 
 void AlarmSettingsScreen::beginEdit(const alarmclock::AlarmConfig& config) {
   edit_ = config;
+  normalizeMinute();
   saveError_ = false;
+  repeatTarget_ = RepeatTarget::None;
 }
 
 const alarmclock::AlarmConfig& AlarmSettingsScreen::editConfig() const {
@@ -139,10 +141,10 @@ void AlarmSettingsScreen::draw() {
     drawButton(display_, controls[i], kPanel, kPanelRaised);
   }
   setFont(text_, u8g2_font_helvB18_te, kWarmWhite);
-  centeredText(text_, u8"−", 40, 108);
-  centeredText(text_, u8"+", 134, 108);
-  centeredText(text_, u8"−", 186, 108);
-  centeredText(text_, u8"+", 280, 108);
+  centeredText(text_, "-", 40, 108);
+  centeredText(text_, "+", 134, 108);
+  centeredText(text_, "-", 186, 108);
+  centeredText(text_, "+", 280, 108);
 
   char value[3];
   setFont(text_, u8g2_font_logisoso38_tf, kWarmWhite);
@@ -177,21 +179,26 @@ void AlarmSettingsScreen::draw() {
 }
 
 AlarmSettingsScreen::Action AlarmSettingsScreen::handleTap(int16_t x,
-                                                            int16_t y) {
+                                                             int16_t y) {
   saveError_ = false;
+  repeatTarget_ = RepeatTarget::None;
   if (backTarget().contains(x, y)) return Action::Cancel;
   if (enabledTarget().contains(x, y)) {
     edit_.softwareEnabled = !edit_.softwareEnabled;
     return Action::None;
   }
   if (hourMinusTarget().contains(x, y)) {
-    edit_.hour = edit_.hour == 0 ? 23 : edit_.hour - 1;
+    edit_.hour = (edit_.hour + 23) % 24;
+    repeatTarget_ = RepeatTarget::HourMinus;
   } else if (hourPlusTarget().contains(x, y)) {
-    edit_.hour = edit_.hour == 23 ? 0 : edit_.hour + 1;
+    edit_.hour = (edit_.hour + 1) % 24;
+    repeatTarget_ = RepeatTarget::HourPlus;
   } else if (minuteMinusTarget().contains(x, y)) {
-    edit_.minute = edit_.minute == 0 ? 59 : edit_.minute - 1;
+    edit_.minute = (edit_.minute + 55) % 60;
+    repeatTarget_ = RepeatTarget::MinuteMinus;
   } else if (minutePlusTarget().contains(x, y)) {
-    edit_.minute = edit_.minute == 59 ? 0 : edit_.minute + 1;
+    edit_.minute = (edit_.minute + 5) % 60;
+    repeatTarget_ = RepeatTarget::MinutePlus;
   } else {
     for (uint8_t day = 0; day < 7; ++day) {
       if (dayTarget(day).contains(x, y)) {
@@ -207,6 +214,89 @@ AlarmSettingsScreen::Action AlarmSettingsScreen::handleTap(int16_t x,
     if (saveTarget().contains(x, y)) return Action::Save;
   }
   return Action::None;
+}
+
+void AlarmSettingsScreen::startRepeatTracking(uint32_t nowMs) {
+  if (repeatTarget_ != RepeatTarget::None) {
+    repeatStartMs_ = nowMs;
+    lastRepeatMs_ = nowMs;
+  }
+}
+
+void AlarmSettingsScreen::checkRepeatStart(int16_t x, int16_t y,
+                                            uint32_t nowMs) {
+  if (repeatTarget_ != RepeatTarget::None) return;
+  if (hourMinusTarget().contains(x, y)) {
+    repeatTarget_ = RepeatTarget::HourMinus;
+  } else if (hourPlusTarget().contains(x, y)) {
+    repeatTarget_ = RepeatTarget::HourPlus;
+  } else if (minuteMinusTarget().contains(x, y)) {
+    repeatTarget_ = RepeatTarget::MinuteMinus;
+  } else if (minutePlusTarget().contains(x, y)) {
+    repeatTarget_ = RepeatTarget::MinutePlus;
+  }
+  if (repeatTarget_ != RepeatTarget::None) {
+    repeatStartMs_ = nowMs;
+    lastRepeatMs_ = nowMs;
+  }
+}
+
+void AlarmSettingsScreen::handleRepeat(bool touchActive, int16_t x,
+                                        int16_t y, uint32_t nowMs) {
+  if (repeatTarget_ == RepeatTarget::None || !touchActive) {
+    repeatTarget_ = RepeatTarget::None;
+    return;
+  }
+  // Verify the finger is still over the same button area.
+  bool stillOver = false;
+  switch (repeatTarget_) {
+    case RepeatTarget::HourMinus:   stillOver = hourMinusTarget().contains(x, y); break;
+    case RepeatTarget::HourPlus:    stillOver = hourPlusTarget().contains(x, y); break;
+    case RepeatTarget::MinuteMinus: stillOver = minuteMinusTarget().contains(x, y); break;
+    case RepeatTarget::MinutePlus:  stillOver = minutePlusTarget().contains(x, y); break;
+    default: break;
+  }
+  if (!stillOver) {
+    repeatTarget_ = RepeatTarget::None;
+    return;
+  }
+  if (nowMs - repeatStartMs_ < 450) return;  // initial delay
+  if (nowMs - lastRepeatMs_ < 120) return;   // repeat interval
+  lastRepeatMs_ = nowMs;
+  applyRepeat();
+
+  // Partial redraw: only update the changed number.
+  char value[3];
+  if (repeatTarget_ == RepeatTarget::HourMinus ||
+      repeatTarget_ == RepeatTarget::HourPlus) {
+    std::snprintf(value, sizeof(value), "%02u",
+                  static_cast<unsigned>(edit_.hour));
+    display_.fillRect(62, 90, 50, 40, kBackground);
+    setFont(text_, u8g2_font_logisoso38_tf, kWarmWhite);
+    centeredText(text_, value, 87, 117);
+  } else {
+    std::snprintf(value, sizeof(value), "%02u",
+                  static_cast<unsigned>(edit_.minute));
+    display_.fillRect(208, 90, 50, 40, kBackground);
+    setFont(text_, u8g2_font_logisoso38_tf, kWarmWhite);
+    centeredText(text_, value, 233, 117);
+  }
+}
+
+void AlarmSettingsScreen::applyRepeat() {
+  switch (repeatTarget_) {
+    case RepeatTarget::HourMinus:   edit_.hour = (edit_.hour + 23) % 24; break;
+    case RepeatTarget::HourPlus:    edit_.hour = (edit_.hour + 1) % 24; break;
+    case RepeatTarget::MinuteMinus: edit_.minute = (edit_.minute + 55) % 60; break;
+    case RepeatTarget::MinutePlus:  edit_.minute = (edit_.minute + 5) % 60; break;
+    default: break;
+  }
+}
+
+void AlarmSettingsScreen::normalizeMinute() {
+  // Round to nearest valid 5-minute step, wrapping 60 to 0.
+  uint8_t rounded = ((edit_.minute + 2) / 5) * 5;
+  edit_.minute = rounded >= 60 ? 0 : rounded;
 }
 
 RingingScreen::RingingScreen(Adafruit_GFX& display,

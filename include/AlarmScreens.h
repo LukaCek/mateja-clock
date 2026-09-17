@@ -23,6 +23,9 @@ class AlarmSettingsScreen {
   void beginEdit(const alarmclock::AlarmConfig& config);
   void draw();
   Action handleTap(int16_t x, int16_t y);
+  void handleRepeat(bool touchActive, int16_t x, int16_t y, uint32_t nowMs);
+  void checkRepeatStart(int16_t x, int16_t y, uint32_t nowMs);
+  void startRepeatTracking(uint32_t nowMs);
   const alarmclock::AlarmConfig& editConfig() const;
   alarmclock::AlarmConfig& editConfig();
   void setSaveError(bool error);
@@ -38,11 +41,19 @@ class AlarmSettingsScreen {
   static AlarmScreenRect saveTarget();
 
  private:
+  enum class RepeatTarget : uint8_t { None, HourMinus, HourPlus, MinuteMinus, MinutePlus };
+
+  void applyRepeat();
+  void normalizeMinute();
+
   Adafruit_GFX& display_;
   U8G2_FOR_ADAFRUIT_GFX& text_;
   alarmclock::AlarmConfig edit_;
   bool saveError_;
   bool hardwareAllowed_;
+  RepeatTarget repeatTarget_ = RepeatTarget::None;
+  uint32_t repeatStartMs_ = 0;
+  uint32_t lastRepeatMs_ = 0;
 };
 
 class RingingScreen {

@@ -307,6 +307,49 @@ void testSerialParserCompatibility() {
                         static_cast<int>(alarmclock::parseAlarmSerialCommand("alarm snooze-min 10").type));
 }
 
+// ── Minute step and normalization tests ────────────────────────────
+namespace steps {
+constexpr uint8_t stepMinutePlus(uint8_t m) { return (m + 5) % 60; }
+constexpr uint8_t stepMinuteMinus(uint8_t m) { return (m + 55) % 60; }
+constexpr uint8_t stepHourPlus(uint8_t h) { return (h + 1) % 24; }
+constexpr uint8_t stepHourMinus(uint8_t h) { return (h + 23) % 24; }
+constexpr uint8_t normalizeMinute(uint8_t m) {
+  return ((m + 2) / 5) * 5 >= 60 ? 0 : ((m + 2) / 5) * 5;
+}
+}  // namespace steps
+
+void testMinutePlusStepsByFive() {
+  TEST_ASSERT_EQUAL_UINT8(5, steps::stepMinutePlus(0));
+  TEST_ASSERT_EQUAL_UINT8(10, steps::stepMinutePlus(5));
+  TEST_ASSERT_EQUAL_UINT8(55, steps::stepMinutePlus(50));
+  TEST_ASSERT_EQUAL_UINT8(0, steps::stepMinutePlus(55));
+}
+
+void testMinuteMinusStepsByFive() {
+  TEST_ASSERT_EQUAL_UINT8(55, steps::stepMinuteMinus(0));
+  TEST_ASSERT_EQUAL_UINT8(50, steps::stepMinuteMinus(55));
+  TEST_ASSERT_EQUAL_UINT8(5, steps::stepMinuteMinus(10));
+  TEST_ASSERT_EQUAL_UINT8(0, steps::stepMinuteMinus(5));
+}
+
+void testHourWrap() {
+  TEST_ASSERT_EQUAL_UINT8(0, steps::stepHourPlus(23));
+  TEST_ASSERT_EQUAL_UINT8(1, steps::stepHourPlus(0));
+  TEST_ASSERT_EQUAL_UINT8(23, steps::stepHourMinus(0));
+  TEST_ASSERT_EQUAL_UINT8(22, steps::stepHourMinus(23));
+}
+
+void testMinuteNormalization() {
+  TEST_ASSERT_EQUAL_UINT8(0, steps::normalizeMinute(0));
+  TEST_ASSERT_EQUAL_UINT8(0, steps::normalizeMinute(2));
+  TEST_ASSERT_EQUAL_UINT8(5, steps::normalizeMinute(3));
+  TEST_ASSERT_EQUAL_UINT8(5, steps::normalizeMinute(7));
+  TEST_ASSERT_EQUAL_UINT8(10, steps::normalizeMinute(12));
+  TEST_ASSERT_EQUAL_UINT8(25, steps::normalizeMinute(27));
+  TEST_ASSERT_EQUAL_UINT8(55, steps::normalizeMinute(57));
+  TEST_ASSERT_EQUAL_UINT8(0, steps::normalizeMinute(59));
+}
+
 }  // namespace
 
 void setUp() {}
@@ -342,5 +385,9 @@ int main() {
   RUN_TEST(testTestSnoozeCancellationDoesNotHandleOccurrence);
   RUN_TEST(testNaturalSnoozeExpiryRetainsScheduledOccurrence);
   RUN_TEST(testSerialParserCompatibility);
+  RUN_TEST(testMinutePlusStepsByFive);
+  RUN_TEST(testMinuteMinusStepsByFive);
+  RUN_TEST(testHourWrap);
+  RUN_TEST(testMinuteNormalization);
   return UNITY_END();
 }
