@@ -1,5 +1,48 @@
 # Development Progress
 
+## 2026-09-17 - Panel rotation, SD Wi-Fi config, canonical alarm audio
+
+### Display and touch rotated 180°
+
+- `display.setRotation(3)` became `setRotation(1)`; the ST7789 MADCTL cases
+  differ by both mirror axes, so this is exactly 180° with the logical 320×240
+  UI unchanged.
+- Touch reuses the existing calibrated raw→logical mapping and then mirrors the
+  result: `x = 319 - x`, `y = 239 - y` (after clamping), so no recalibration was
+  needed.
+- All Home, messages, alarm settings, volume and Ringing hit targets were
+  hardware-tested after the change.
+
+### Wi-Fi credentials moved to the SD card
+
+- Added pure `WifiConfig` (C++11, no ArduinoJson) parsing
+  `/clock/config/wifi.json` as `{"ssid":"...","password":"..."}` with an
+  optional password; malformed/truncated/empty-ssid payloads are rejected.
+- `setup()` now mounts the SD card and reads the config before
+  `clockTime.begin()`. The compile-time `MATEJA_WIFI_*` dependency was removed;
+  a missing config logs `[WIFI] config missing; staying offline` and never
+  prints the password.
+- `tools/upload_wifi_config.py` reads the gitignored
+  `include/wifi_credentials.h` and uploads the config over `!putfile`, printing
+  only the SSID.
+- Twelve new native `test_wifi_config` cases (136 total).
+
+### `!gift-reset-full` preserves Wi-Fi
+
+- A dedicated maintenance command `!wificfg get` (hex-encoded; only
+  `/clock/config/wifi.json`, no arbitrary path) lets `tools/gift_reset.py --full`
+  capture the config before the wipe, abort if it cannot be captured and no host
+  replacement exists, restore it, then verify the payload byte-for-byte and that
+  Wi-Fi is still connected.
+
+### Canonical alarm audio replaced
+
+- The new sourced ring (`alarm_output/alarm.wav`, FFmpeg/Lavf, 37.413 s,
+  1,649,980 bytes) was copied byte-for-byte onto the production asset
+  `assets/sd/audio/alarm.wav` (sha256 `1b521f5f…`). It is now the single
+  canonical source that `--full` deploys to `/clock/audio/alarm.wav`; the old
+  20 s generator render (`f3c61551…`) is gone.
+
 ## 2026-09-16 - Phase 5 Complete: CYD P3 Link + Alarm Regression Fixed
 
 ### Follow-up: exact scheduled occurrences

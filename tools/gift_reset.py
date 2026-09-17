@@ -35,17 +35,24 @@ the computers canonical copy in assets/sd/ (RAW emoji + alarm.wav), recreates
 required directories, restores the logical ntfy checkpoint, re-applies the
 alarm configuration, and verifies the clock is operational.
 
-FULL mode preserves ONLY /clock/photos/ and /clock/manifest.json on the card.
-It deletes messages, SD config/state, audio, emoji, temporary and recovery
-files (including FSCK*.REC fragments), then restores whatever firmware
-requires from assets/sd/. Photo set equality before/after is enforced; a
-single missing photo fails the whole reset.
+FULL mode preserves /clock/photos/, /clock/manifest.json, and the Wi-Fi
+credentials. It deletes messages, SD config/state, audio, emoji, temporary and
+recovery files (including FSCK*.REC fragments), then restores whatever firmware
+requires from assets/sd/. Photo set equality before/after is enforced; a single
+missing photo fails the whole reset.
+
+The Wi-Fi config (/clock/config/wifi.json) is captured from the clock BEFORE
+the destructive wipe and restored afterwards. If it cannot be captured and no
+replacement is available from the local gitignored include/wifi_credentials.h,
+the reset aborts before deleting anything. The payload is held in memory only,
+never printed, and never written into the repository.
 
 This script NEVER erases flash, formats the SD card, modifies the C3 firmware,
 or touches the DS1302 RTC or display calibration.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -84,6 +91,7 @@ FULL_WARNING = (
     "\n"
     "PRESERVED:\n"
     "- Mateja photos\n"
+    "- Wi-Fi credentials (captured, then restored)\n"
     "\n"
     "RESET/REPLACED:\n"
     "- messages\n"
@@ -106,6 +114,8 @@ EMOJI_ASSETS = {
            "1f970.raw": 4612, "2764.raw": 4612},
 }
 AUDIO_ASSET = os.path.join(ASSETS_DIR, "audio", "alarm.wav")
+WIFI_CONFIG_PATH = "/clock/config/wifi.json"
+WIFI_HEADER_PATH = os.path.join(PROJECT_ROOT, "include", "wifi_credentials.h")
 
 
 # ---------------------------------------------------------------------------
@@ -265,11 +275,33 @@ def parse_gift_reset(line):
 # ---------------------------------------------------------------------------
 
 def list_dir_entries(ser, directory):
-    """Return (set_of_subdirs, dict_of_file_path -> byte size)."""
+    """Return (set_of_subdirs, dict_of_file_path -> byte size).
+
+    Uses the marker-based [LS_END] line instead of a quiet-gap timeout so
+    that concurrent firmware log output does not truncate the response.
+    """
     prefix = directory.rstrip("/") + "/"
     subdirs = set()
     files = {}
-    text = send_command(ser, "!ls %s" % directory)
+    ser.reset_input_buffer()
+    ser.write(("!ls %s\r\n" % directory).encode("ascii"))
+    ser.flush()
+    deadline = time.monotonic() + 15.0
+    buffer = b""
+    got_end = False
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        ser.timeout = min(0.4, remaining)
+        chunk = ser.read(max(1, min(4096, ser.in_waiting or 4096)))
+        if not chunk:
+            continue
+        buffer += chunk
+        if b"[LS_END]" in buffer:
+            got_end = True
+            break
+    if not got_end:
+        return subdirs, files
+    text = buffer.decode("utf-8", "replace")
     for line in text.splitlines():
         if not line.startswith("[LS] "):
             continue
@@ -513,6 +545,108 @@ def restore_alarm_wav(ser):
     return upload_wav(ser, payload)
 
 
+def read_wifi_header(path=None):
+    """Return (ssid, password) from a local gitignored credential header."""
+    path = WIFI_HEADER_PATH if path is None else path
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+
+    def macro(name):
+        match = re.search(r'#define\s+%s\s+"((?:[^"\\]|\\.)*)"' % name, text)
+        if match is None:
+            return None
+        return match.group(1).replace('\\"', '"').replace("\\\\", "\\")
+
+    ssid = macro("MATEJA_WIFI_SSID")
+    if not ssid:
+        raise ValueError("MATEJA_WIFI_SSID missing/empty in %s" % path)
+    password = macro("MATEJA_WIFI_PASSWORD")
+    return ssid, ("" if password is None else password)
+
+
+def build_wifi_payload(ssid, password):
+    return json.dumps({"ssid": ssid, "password": password},
+                      separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def host_wifi_payload():
+    """Best-effort replacement config from the local header, else None."""
+    try:
+        ssid, password = read_wifi_header()
+    except (OSError, ValueError):
+        return None
+    return build_wifi_payload(ssid, password)
+
+
+def decode_wifi_dump(lines):
+    expected = None
+    chunks = []
+    for text in lines:
+        if text.startswith("[WIFICFG] bytes="):
+            try:
+                expected = int(text.split("=", 1)[1])
+            except ValueError:
+                return None
+        elif re.fullmatch(r"[0-9a-fA-F]+", text):
+            chunks.append(text)
+    if expected is None:
+        return None
+    try:
+        data = bytes.fromhex("".join(chunks))
+    except ValueError:
+        return None
+    return data if len(data) == expected else None
+
+
+def capture_wifi_config(ser):
+    """Read back /clock/config/wifi.json via the dedicated !wificfg command.
+
+    Returns (data, detail); data is None when the file is absent or the dump
+    cannot be decoded. The payload is kept in memory only and never printed.
+    """
+    ser.reset_input_buffer()
+    ser.write(b"!wificfg get\r\n")
+    ser.flush()
+    deadline = time.monotonic() + 10.0
+    buffer = b""
+    lines = []
+    while time.monotonic() < deadline:
+        chunk = ser.read(ser.in_waiting or 1)
+        if chunk:
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                text = raw.decode("utf-8", "replace").strip()
+                if text.startswith("[WIFICFG] missing"):
+                    return None, "missing"
+                if text.startswith("[WIFICFG] end"):
+                    data = decode_wifi_dump(lines)
+                    return (data, "captured") if data is not None \
+                        else (None, "undecodable")
+                lines.append(text)
+        else:
+            time.sleep(0.02)
+    return None, "timeout"
+
+
+def verify_wifi_config(ser, expected):
+    data, detail = capture_wifi_config(ser)
+    if data is None:
+        return ["Wi-Fi config not readable after restore: %s" % detail]
+    if data != expected:
+        return ["Wi-Fi config on SD differs from the expected payload"]
+    return []
+
+
+def verify_wifi_online(ser):
+    status = last_status_line(send_command(ser, "!d"), "[TIME_STATUS]")
+    if not status:
+        return ["Wi-Fi status not reported"]
+    if "wifi=connected" not in status:
+        return ["Wi-Fi not connected after full reset"]
+    return []
+
+
 def restore_processed_checkpoint(ser, last_processed):
     if last_processed is None:
         return False, "no checkpoint value captured"
@@ -603,7 +737,7 @@ def full_reset_diagnostics(ser, photo_count):
     return problems
 
 
-def run_full_reset(ser, before_photos, before_msg, alarm_before):
+def run_full_reset(ser, before_photos, before_msg, alarm_before, wifi_payload):
     """Execute and verify the full SD rebuild. Returns (ok, problems, report)."""
     problems = []
     report = {}
@@ -655,6 +789,13 @@ def run_full_reset(ser, before_photos, before_msg, alarm_before):
     for directory in ["/clock/messages", "/clock/config", "/clock/audio",
                       "/emoji", "/emoji/32", "/emoji/48"]:
         ensure_remote_dirs(ser, directory)
+
+    print("Restoring Wi-Fi config...")
+    ok, detail = upload_putfile(ser, wifi_payload, WIFI_CONFIG_PATH)
+    if not ok:
+        problems.append("wifi config restore failed: %s" % detail)
+    report["wifi"] = ("%d bytes" % len(wifi_payload)) if ok \
+        else ("FAILED: %s" % detail)
 
     print("Restoring emoji assets (%d files)..." %
           sum(len(expected) for expected in EMOJI_ASSETS.values()))
@@ -740,6 +881,8 @@ def run_full_reset(ser, before_photos, before_msg, alarm_before):
 
     problems.extend(verify_emoji_on_sd(ser))
     problems.extend(verify_audio_on_sd(ser))
+    problems.extend(verify_wifi_config(ser, wifi_payload))
+    problems.extend(verify_wifi_online(ser))
     problems.extend(full_reset_diagnostics(ser, len(photo_before_set)))
 
     c3 = parse_c3_status(ser)
@@ -886,6 +1029,7 @@ def print_full_report(report):
     print("Emoji:              %d files restored" %
           sum(len(expected) for expected in EMOJI_ASSETS.values()))
     print("Audio:              %s" % report.get("audio", "-"))
+    print("Wi-Fi config:       %s" % report.get("wifi", "-"))
     print("Checkpoint:         %s" % report.get("checkpoint", "-"))
     print("C3:                 %s" % report.get("c3", "-"))
     print("RTC:                %s" % report.get("rtc", "-"))
@@ -1099,11 +1243,25 @@ def _run_full(ser):
            before_alarm.get("volume"), "yes" if before_alarm.get("enabled")
            else "no"))
 
+    print("Capturing Wi-Fi config...")
+    wifi_payload, wifi_detail = capture_wifi_config(ser)
+    if wifi_payload is None:
+        replacement = host_wifi_payload()
+        if replacement is None:
+            return False, ["cannot capture %s (%s) and no host replacement "
+                           "available; aborting before wipe" %
+                           (WIFI_CONFIG_PATH, wifi_detail)], {}
+        wifi_payload = replacement
+        print("  capture unavailable (%s); using host replacement" %
+              wifi_detail)
+    else:
+        print("  captured %d bytes (in memory only)" % len(wifi_payload))
+
     print("Collecting photo inventory...")
     before_photos = collect_sd_files(ser, "/clock/photos")
 
     ok, problems, report = run_full_reset(
-        ser, before_photos, before_msg, before_alarm)
+        ser, before_photos, before_msg, before_alarm, wifi_payload)
     return ok, problems, report
 
 

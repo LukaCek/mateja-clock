@@ -25,15 +25,9 @@
 #include "StatusProviders.h"
 #include "TimeService.h"
 #include "WavUploader.h"
+#include "WifiConfig.h"
 #include "hardware_pins.h"
 #include "ntfy_ca_cert.h"
-
-#if __has_include("wifi_credentials.h")
-#include "wifi_credentials.h"
-#else
-#define MATEJA_WIFI_SSID ""
-#define MATEJA_WIFI_PASSWORD ""
-#endif
 
 #if __has_include("ntfy_credentials.h")
 #include "ntfy_credentials.h"
@@ -124,6 +118,34 @@ uint32_t lastPhotoChangeAt = 0;
 PhotoService::StartResult photoStartResult =
     PhotoService::StartResult::kInvalidManifest;
 
+// Wi-Fi credentials loaded from the SD card. Held for the lifetime of the
+// program because TimeService keeps pointers to these strings.
+wificonfig::Credentials wifiCredentials;
+
+const wificonfig::Credentials& loadWifiCredentials(bool sdMounted) {
+  wifiCredentials = wificonfig::Credentials{};
+  if (!sdMounted) {
+    Serial.println("[WIFI] config missing; staying offline");
+    return wifiCredentials;
+  }
+  File file = SD.open(wificonfig::kConfigPath, FILE_READ);
+  if (!file) {
+    Serial.println("[WIFI] config missing; staying offline");
+    return wifiCredentials;
+  }
+  char buffer[wificonfig::kMaxConfigBytes];
+  const std::size_t read = file.readBytes(buffer, sizeof(buffer));
+  file.close();
+  wifiCredentials = wificonfig::Parse(buffer, read);
+  if (!wifiCredentials.valid) {
+    Serial.println("[WIFI] config invalid; staying offline");
+  } else {
+    Serial.printf("[WIFI] config loaded ssid_len=%u\n",
+                  static_cast<unsigned>(std::strlen(wifiCredentials.ssid)));
+  }
+  return wifiCredentials;
+}
+
 uint8_t touchTransfer(uint8_t output) {
   uint8_t input = 0;
   for (uint8_t mask = 0x80; mask != 0; mask >>= 1) {
@@ -166,8 +188,13 @@ bool readTouchPoint(uint16_t& screenX, uint16_t& screenY) {
       20 + (static_cast<int32_t>(rawY) - 429) * (299 - 20) / (3592 - 429);
   const int32_t mappedY =
       20 + (static_cast<int32_t>(rawX) - 510) * (219 - 20) / (3555 - 510);
-  screenX = constrain(mappedX, 0, 319);
-  screenY = constrain(mappedY, 0, 239);
+  // The panel is mounted 180 degrees from the orientation this calibration was
+  // captured for (display.setRotation(1)), so mirror both logical axes after
+  // the existing raw-to-logical mapping instead of re-deriving the calibration.
+  const int32_t clampedX = constrain(mappedX, 0, 319);
+  const int32_t clampedY = constrain(mappedY, 0, 239);
+  screenX = static_cast<uint16_t>(319 - clampedX);
+  screenY = static_cast<uint16_t>(239 - clampedY);
   return true;
 }
 
@@ -522,7 +549,7 @@ void printCommands() {
       "!msg [list|unread|read INDEX|ack|inject <text>|processed <id>|clear], "
       "!ntfy, !rtc [sync], "
       "!c3, !c3 ping, !emoji, !gift-reset, !gift-reset-full, "
-      "!ls [dir], !rmfile <path>");
+      "!ls [dir], !rmfile <path>, !wificfg get");
 }
 
 void refreshHomeIfVisible() {
@@ -1188,6 +1215,51 @@ void executeCommand(const char* command) {
                   path);
     return;
   }
+  if (strncmp(command, "wificfg ", 8) == 0) {
+    // Maintenance-only helper for tools/gift_reset.py, which needs to capture
+    // /clock/config/wifi.json before a full wipe. No arbitrary path is
+    // accepted; only this exact file can be read. The dump is hex-encoded so
+    // the Wi-Fi password never appears as plain text in the serial stream.
+    if (std::strcmp(command + 8, "get") == 0) {
+      if (!sdIsMounted) {
+        Serial.println("[WIFICFG] missing");
+        return;
+      }
+      File file = SD.open(wificonfig::kConfigPath, FILE_READ);
+      if (!file) {
+        Serial.println("[WIFICFG] missing");
+        return;
+      }
+      Serial.printf("[WIFICFG] bytes=%u\n",
+                    static_cast<unsigned>(file.size()));
+      static const char kDigits[] = "0123456789abcdef";
+      constexpr std::size_t kHexLineBytes = 64;
+      char hex[kHexLineBytes * 2 + 1];
+      std::size_t used = 0;
+      while (file.available() > 0) {
+        const int value = file.read();
+        if (value < 0) {
+          break;
+        }
+        hex[used++] = kDigits[(value >> 4) & 0x0F];
+        hex[used++] = kDigits[value & 0x0F];
+        if (used == kHexLineBytes * 2) {
+          hex[used] = '\0';
+          Serial.println(hex);
+          used = 0;
+        }
+      }
+      file.close();
+      if (used > 0) {
+        hex[used] = '\0';
+        Serial.println(hex);
+      }
+      Serial.println("[WIFICFG] end");
+      return;
+    }
+    Serial.println("[WIFICFG] usage: !wificfg get");
+    return;
+  }
 }
 
 void handleSerial() {
@@ -1507,17 +1579,14 @@ void setup() {
   displaySpi.begin(pins::kTftClock, pins::kTftMiso, pins::kTftMosi,
                    pins::kTftChipSelect);
   display.init(240, 320, SPI_MODE0);
-  display.setRotation(3);
+  display.setRotation(1);
   display.invertDisplay(false);
   display.setTextWrap(false);
   unicodeText.begin(display);
   drawLoadingScreen();
 
-  clockTime.begin(MATEJA_WIFI_SSID, MATEJA_WIFI_PASSWORD);
-  rtcLink.begin(Serial1);
-  clockTime.setFallbackEpochProvider([]() -> std::int64_t {
-    return rtcLink.rtcValid() ? rtcLink.rtcEpoch() : 0;
-  });
+  // Mount the SD card before Wi-Fi/time networking so the credentials can be
+  // read from /clock/config/wifi.json.
   photoStartResult = photos.begin();
   sdIsMounted = photoStartResult != PhotoService::StartResult::kSdUnavailable;
   const bool sdMounted = sdIsMounted;
@@ -1526,6 +1595,13 @@ void setup() {
     SD.mkdir("/emoji/32");
     SD.mkdir("/emoji/48");
   }
+
+  const wificonfig::Credentials& wifi = loadWifiCredentials(sdMounted);
+  clockTime.begin(wifi.ssid, wifi.password);
+  rtcLink.begin(Serial1);
+  clockTime.setFallbackEpochProvider([]() -> std::int64_t {
+    return rtcLink.rtcValid() ? rtcLink.rtcEpoch() : 0;
+  });
   alarmService.begin(sdMounted);
   messageService.begin(sdMounted);
   photos.setBottomGradient(true);

@@ -32,15 +32,24 @@ Use `--replace` only when intentionally replacing an existing clock photo datase
 
 ## Firmware
 
-For NTP time, create the ignored local credential header from the example and
-enter a WPA2 2.4 GHz network:
+For NTP time the clock reads its WPA2 2.4 GHz credentials from
+`/clock/config/wifi.json` on the SD card at boot. Create the ignored local
+header from the example, fill in the network, and push it to the clock once
+over USB:
 
 ```bash
 cp include/wifi_credentials.example.h include/wifi_credentials.h
+# edit the SSID/password, then:
+./.venv/bin/python tools/upload_wifi_config.py
 ```
 
-The firmware also builds without this local file. It stays responsive offline,
-shows `--:--`, and retries Wi-Fi asynchronously.
+Power-cycle the clock afterwards so it loads the new config. The real
+`wifi.json` is never committed. The firmware builds and boots without the file:
+it stays responsive offline, shows `--:--`, and retries Wi-Fi asynchronously.
+
+The display and touch panel are mounted 180° from the original orientation, so
+the firmware uses `setRotation(1)` and mirrors the calibrated touch coordinates
+on both axes; the logical UI stays 320×240.
 
 Build, upload, and monitor:
 
@@ -192,10 +201,11 @@ What FULL mode never touches:
 - Flash contents (no firmware erase/reflash)
 - C3 coprocessor firmware or state
 - DS1302 RTC or display calibration
-- Wi-Fi/ntfy credentials (compiled into the firmware)
+- Wi-Fi credentials (captured from `/clock/config/wifi.json` before the wipe and restored afterwards; the payload is never printed or committed)
+- ntfy credentials (compiled into the firmware)
 
 Production assets are restored from `assets/sd/` in the repository (`assets/sd/emoji/32/*.raw`, `assets/sd/emoji/48/*.raw`, `assets/sd/audio/alarm.wav`). The script aborts immediately — without modifying the clock — if any of these assets are missing locally.
 
-Post-rebuild verification: photo set equality (must match byte-for-byte), messages == 0, unread == 0, ntfy checkpoint preserved, alarm state == armed with correct settings, all emoji present, alarm WAV restored, C3 connected, home screen displayed.
+Post-rebuild verification: photo set equality (must match byte-for-byte), messages == 0, unread == 0, ntfy checkpoint preserved, Wi-Fi config restored byte-for-byte and Wi-Fi still connected, alarm state == armed with correct settings, all emoji present, alarm WAV restored, C3 connected, home screen displayed.
 
 The firmware targets the `huge_app.csv` partition (3 MB application, no OTA) because the audio library exceeds the default app partition.
