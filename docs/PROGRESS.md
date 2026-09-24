@@ -1,5 +1,17 @@
 # Development Progress
 
+## 2026-09-24 - OTA Bootstrap A (local)
+
+- Added SD-backed ntfy runtime configuration so release firmware contains no
+  private ntfy topic/token.
+- Replaced the single 3 MiB app layout with two 1,984 KiB OTA slots while
+  retaining NVS, OTA metadata, and flash coredumps.
+- Added strict GitHub Release manifest/version/SHA validation, direct inactive
+  slot streaming, alarm cancellation/reboot gates, and delayed first-boot OTA
+  confirmation.
+- Added tagged GitHub Actions release scaffolding; no repository, remote, tag,
+  or push has been created.
+
 ## 2026-09-17 - Panel rotation, SD Wi-Fi config, canonical alarm audio
 
 ### Display and touch rotated 180°

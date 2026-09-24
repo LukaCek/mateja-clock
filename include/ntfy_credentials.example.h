@@ -1,7 +1,8 @@
 #pragma once
 
-// Copy this file to include/ntfy_credentials.h and fill in the values. The
-// access token is embedded in firmware at build time; keep it private.
+// Copy this file to include/ntfy_credentials.h and fill in the values, then run
+// tools/upload_ntfy_config.py. This file is a local migration source only;
+// release firmware reads /clock/config/ntfy.json from SD and embeds no token.
 //
 // - MATEJA_NTFY_BASE_URL: the base of your ntfy installation, e.g.
 //     "https://ntfy.example.com"  (no trailing slash, HTTPS required).

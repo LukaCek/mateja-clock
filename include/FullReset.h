@@ -8,6 +8,9 @@ namespace fullreset {
 // eligible for deletion and subsequent rebuild.
 extern const char kPhotoDirectory[];  // "/clock/photos"
 extern const char kManifestPath[];    // "/clock/manifest.json"
+extern const char kNtfyConfigPath[];  // "/clock/config/ntfy.json"
+extern const char kAdminConfigPath[]; // "/clock/config/admin.json"
+extern const char kOtaConfigPath[];   // "/clock/config/ota.json"
 
 // True for "/clock/photos" itself or any path beneath it. A rigid directory
 // prefix check: "/clock/photos.jpg" or "/clock/photos2/keep.jpg" are NOT
@@ -18,7 +21,7 @@ bool isPhotoPath(const char* path);
 bool isManifestPath(const char* path);
 
 // True when a path must never be selected for deletion: the photo subtree,
-// the photo manifest, and the root guards ("" and "/"). The container
+// the photo manifest, SD-only secret configuration, and the root guards.
 // "/clock" itself is NOT protected; it survives only because it still holds
 // protected content after the wipe.
 bool isProtectedPath(const char* path);

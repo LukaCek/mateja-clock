@@ -50,6 +50,8 @@ The active card additionally contains:
   config/
     settings.json
     wifi.json
+    ntfy.json
+    ota.json
 ```
 
 `/clock/audio/alarm.wav` is the ringing sound. It must be mono, 16-bit, 22050 Hz PCM WAV; the canonical asset `assets/sd/audio/alarm.wav` is 1,649,980 bytes (37.413 s). Deploy the canonical file over serial with `tools/deploy_alarm_wav_serial.py --wav assets/sd/audio/alarm.wav`, which waits for the firmware `WAVREADY` prompt and sends a CRC-verified upload, or restore it with `tools/gift_reset.py --full`. The firmware plays exactly `/clock/audio/alarm.wav`; a `LIST` metadata chunk is skipped by the firmware's WAV parser.
@@ -60,6 +62,12 @@ from the gitignored `include/wifi_credentials.h` and read once at boot. It is
 never committed to the repository, and `tools/gift_reset.py --full` captures it
 before wiping and restores it afterwards (aborting the wipe if capture fails and
 no host replacement is available).
+
+`/clock/config/ntfy.json` holds the ntfy base URL, inbox/ack topics, bearer
+token, and optional custom CA. `tools/upload_ntfy_config.py` migrates the local
+ignored header without printing the token. `/clock/config/ota.json` stores only
+the public GitHub `OWNER/REPO` identifier. Both are preserved by full reset and
+are never copied into committed production assets.
 
 `/clock/config/settings.json` is created and owned by the firmware. It stores the alarm config and the last handled local scheduled occurrence (local date plus configured HH:MM):
 

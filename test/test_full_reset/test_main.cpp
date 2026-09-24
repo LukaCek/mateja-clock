@@ -69,6 +69,15 @@ void testSdConfigStateIsNotProtected() {
   TEST_ASSERT_FALSE(fullreset::isProtectedPath("/clock/config"));
 }
 
+void testSecretRuntimeConfigsAreProtectedOnlyExact() {
+  TEST_ASSERT_TRUE(fullreset::isProtectedPath("/clock/config/ntfy.json"));
+  TEST_ASSERT_TRUE(fullreset::isProtectedPath("/clock/config/admin.json"));
+  TEST_ASSERT_TRUE(fullreset::isProtectedPath("/clock/config/ota.json"));
+  TEST_ASSERT_FALSE(fullreset::isProtectedPath("/clock/config/ntfy.json.bak"));
+  TEST_ASSERT_FALSE(fullreset::isProtectedPath("/clock/config/admin.json.tmp"));
+  TEST_ASSERT_FALSE(fullreset::isProtectedPath("/clock/config/wifi.json"));
+}
+
 void testRecoveryAndTempFilesAreNotProtected() {
   TEST_ASSERT_FALSE(fullreset::isProtectedPath("/FSCK0001.REC"));
   TEST_ASSERT_FALSE(fullreset::isProtectedPath("/FSCK0037.REC"));
@@ -106,6 +115,7 @@ int main(int argc, char** argv) {
   RUN_TEST(testEmojiAreNotProtected);
   RUN_TEST(testAudioIsNotProtected);
   RUN_TEST(testSdConfigStateIsNotProtected);
+  RUN_TEST(testSecretRuntimeConfigsAreProtectedOnlyExact);
   RUN_TEST(testRecoveryAndTempFilesAreNotProtected);
   RUN_TEST(testRootAndContainerAreRemovableGuardOnly);
   RUN_TEST(testNullIsTreatedAsProtected);

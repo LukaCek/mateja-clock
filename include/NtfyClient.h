@@ -53,6 +53,8 @@ class NtfyClient {
   // Forces an early reconnect attempt (used after storage failures and by
   // the serial debug command).
   void reconnectNow();
+  void setPaused(bool paused);
+  bool paused() const { return paused_; }
 
   // Schedules a seen-acknowledgement for the first un-acked read message.
   void requestAck();
@@ -102,6 +104,7 @@ class NtfyClient {
   bool statusOk_ = false;
   bool haveStatusLine_ = false;
   bool lastSyncFailed_ = false;
+  bool paused_ = false;
   unsigned statusCode_ = 0;
   uint32_t chunkRemaining_ = 0;
   uint32_t streamLastDataMs_ = 0;   // millis() when stream bytes last arrived

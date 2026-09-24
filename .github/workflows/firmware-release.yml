@@ -1,0 +1,82 @@
+name: Firmware release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(<version.txt)"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid version.txt: $version" >&2
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "$version"
+          if (( major > 65535 || minor > 65535 || patch > 65535 || ${#version} >= 24 )); then
+            echo "Unsupported version.txt: $version" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match version.txt ($version)" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Assert secret headers are absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for header in include/wifi_credentials.h include/ntfy_credentials.h; do
+            if [[ -e "$header" ]]; then
+              echo "Secret header must not be present: $header" >&2
+              exit 1
+            fi
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.1.18
+
+      - name: Run native tests
+        run: pio test -e native
+
+      - name: Build firmware
+        run: >-
+          pio run -e cyd_photo_test
+
+      - name: Prepare release assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp .pio/build/cyd_photo_test/firmware.bin mateja-clock.bin
+          python tools/generate_release_manifest.py \
+            --version "$VERSION" \
+            --firmware mateja-clock.bin \
+            --output manifest.json
+          python -c 'import hashlib,json,pathlib; p=pathlib.Path("mateja-clock.bin"); m=json.loads(pathlib.Path("manifest.json").read_text()); assert m["product"] == "mateja-clock"; assert m["firmware"] == p.name; assert m["size"] == p.stat().st_size; assert m["sha256"] == hashlib.sha256(p.read_bytes()).hexdigest()'
+
+      - name: Create GitHub release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          mateja-clock.bin manifest.json
+          --verify-tag --generate-notes

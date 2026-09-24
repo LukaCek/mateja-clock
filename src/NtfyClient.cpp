@@ -118,6 +118,10 @@ void NtfyClient::update(bool wifiConnected) {
     return;  // not configured; stays inert
   }
 
+  if (paused_) {
+    return;
+  }
+
   if (!wifiConnected) {
     if (streamActive()) {
       stream_.stop();
@@ -137,6 +141,21 @@ void NtfyClient::update(bool wifiConnected) {
     return;
   }
   pumpStream();
+}
+
+void NtfyClient::setPaused(bool paused) {
+  if (paused_ == paused) return;
+  paused_ = paused;
+  if (paused_) {
+    stream_.stop();
+    ack_.stop();
+    streamState_ = StreamState::kIdle;
+    ackPhase_ = AckPhase::kIdle;
+    Serial.println("[NTFY] paused for OTA");
+  } else {
+    reconnectNow();
+    Serial.println("[NTFY] resumed after OTA");
+  }
 }
 
 void NtfyClient::reconnectNow() {
@@ -514,6 +533,8 @@ void NtfyClient::handleRecordLine() {
       }
       break;
     }
+    case messagelogic::IngestResult::kDuplicate:
+      break;
     case messagelogic::IngestResult::kIgnoredEvent:
       break;
     case messagelogic::IngestResult::kMalformed:

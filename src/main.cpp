@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #include "AlarmAudio.h"
 #include "AlarmLogic.h"
@@ -20,6 +21,8 @@
 #include "MessageScreens.h"
 #include "MessageService.h"
 #include "NtfyClient.h"
+#include "NtfyConfig.h"
+#include "OtaService.h"
 #include "PhotoService.h"
 #include "RtcLinkService.h"
 #include "StatusProviders.h"
@@ -28,15 +31,6 @@
 #include "WifiConfig.h"
 #include "hardware_pins.h"
 #include "ntfy_ca_cert.h"
-
-#if __has_include("ntfy_credentials.h")
-#include "ntfy_credentials.h"
-#else
-#define MATEJA_NTFY_BASE_URL ""
-#define MATEJA_NTFY_INBOX_TOPIC ""
-#define MATEJA_NTFY_ACK_TOPIC ""
-#define MATEJA_NTFY_ACCESS_TOKEN ""
-#endif
 
 namespace {
 
@@ -60,12 +54,14 @@ TimeService clockTime;
 BrightnessService brightness;
 MessageService messageService;
 NtfyClient ntfyClient;
+OtaService* otaService = nullptr;
 AlarmService alarmService;
 AlarmAudio alarmAudio;
 RtcLinkService rtcLink;
 WavUploader wavUploader;
 
 constexpr char kWavPath[] = "/clock/audio/alarm.wav";
+constexpr int kOtaAlarmSafetyMinutes = 15;
 uint32_t wavPendingBytes = 0;
 char uploadPath[64] = {0};
 uint32_t uploadPendingBytes = 0;
@@ -121,6 +117,51 @@ PhotoService::StartResult photoStartResult =
 // Wi-Fi credentials loaded from the SD card. Held for the lifetime of the
 // program because TimeService keeps pointers to these strings.
 wificonfig::Credentials wifiCredentials;
+ntfyconfig::Config* ntfyRuntimeConfig = nullptr;
+
+const ntfyconfig::Config& loadNtfyConfig(bool sdMounted) {
+  static const ntfyconfig::Config emptyConfig;
+  if (ntfyRuntimeConfig == nullptr) {
+    ntfyRuntimeConfig = new (std::nothrow) ntfyconfig::Config();
+  }
+  if (ntfyRuntimeConfig == nullptr) {
+    Serial.println("[NTFY_CONFIG] allocation failed; client disabled");
+    return emptyConfig;
+  }
+  *ntfyRuntimeConfig = ntfyconfig::Config{};
+  if (!sdMounted) {
+    Serial.println("[NTFY_CONFIG] missing; client disabled");
+    return *ntfyRuntimeConfig;
+  }
+  File file = SD.open(ntfyconfig::kConfigPath, FILE_READ);
+  if (!file) {
+    Serial.println("[NTFY_CONFIG] missing; client disabled");
+    return *ntfyRuntimeConfig;
+  }
+  if (file.size() > ntfyconfig::kMaxConfigBytes) {
+    file.close();
+    Serial.println("[NTFY_CONFIG] invalid; client disabled");
+    return *ntfyRuntimeConfig;
+  }
+  char* buffer = new (std::nothrow) char[ntfyconfig::kMaxConfigBytes];
+  if (buffer == nullptr) {
+    file.close();
+    Serial.println("[NTFY_CONFIG] allocation failed; client disabled");
+    return *ntfyRuntimeConfig;
+  }
+  const std::size_t read = file.readBytes(buffer, ntfyconfig::kMaxConfigBytes);
+  file.close();
+  *ntfyRuntimeConfig = ntfyconfig::Parse(buffer, read);
+  delete[] buffer;
+  if (!ntfyRuntimeConfig->valid) {
+    Serial.println("[NTFY_CONFIG] invalid; client disabled");
+  } else {
+    Serial.printf("[NTFY_CONFIG] loaded host_len=%u inbox_len=%u\n",
+                  static_cast<unsigned>(std::strlen(ntfyRuntimeConfig->baseUrl)),
+                  static_cast<unsigned>(std::strlen(ntfyRuntimeConfig->inboxTopic)));
+  }
+  return *ntfyRuntimeConfig;
+}
 
 const wificonfig::Credentials& loadWifiCredentials(bool sdMounted) {
   wifiCredentials = wificonfig::Credentials{};
@@ -547,9 +588,27 @@ void printCommands() {
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
       "!msg [list|unread|read INDEX|ack|inject <text>|processed <id>|clear], "
-      "!ntfy, !rtc [sync], "
+      "!ntfy, !ota [status|check|update], !rtc [sync], "
       "!c3, !c3 ping, !emoji, !gift-reset, !gift-reset-full, "
       "!ls [dir], !rmfile <path>, !wificfg get");
+}
+
+int minutesUntilNextScheduledAlarm() {
+  const TimeService::Snapshot& now = clockTime.snapshot();
+  const alarmclock::AlarmConfig& config = alarmService.config();
+  if (!now.valid || !config.softwareEnabled || !alarmService.hardwareAllowed()) {
+    return 7 * 24 * 60;
+  }
+  const int currentMinutes = now.hour * 60 + now.minute;
+  const int alarmMinutes = config.hour * 60 + config.minute;
+  for (int dayOffset = 0; dayOffset <= 7; ++dayOffset) {
+    const int weekday = (now.weekday + dayOffset) % 7;
+    const uint8_t bit = static_cast<uint8_t>(1U << ((weekday + 6) % 7));
+    if ((config.daysMask & bit) == 0) continue;
+    const int delta = dayOffset * 24 * 60 + alarmMinutes - currentMinutes;
+    if (delta >= 0) return delta;
+  }
+  return 7 * 24 * 60;
 }
 
 void refreshHomeIfVisible() {
@@ -683,8 +742,8 @@ bool wipeSdDirectory(const char* directory, FullResetCounts& counts,
     entry.close();
   }
   handle.close();
-  if (removedAnyThisPass && !hasProtected && pass < 5) {
-    return wipeSdDirectory(directory, counts, pass + 1);
+  if (removedAnyThisPass && pass < 5) {
+    return wipeSdDirectory(directory, counts, pass + 1) || hasProtected;
   }
   return hasProtected;
 }
@@ -1020,6 +1079,26 @@ void executeCommand(const char* command) {
       return;
     }
     Serial.println("[NTFY] usage: !ntfy, !ntfy reconnect");
+    return;
+  }
+  if (strncmp(command, "ota", 3) == 0 &&
+      (command[3] == '\0' || command[3] == ' ')) {
+    if (otaService == nullptr) {
+      Serial.println("[OTA] unavailable");
+      return;
+    }
+    const char* action = command[3] == ' ' ? command + 4 : "status";
+    if (std::strcmp(action, "status") == 0) {
+      otaService->printStatus();
+    } else if (std::strcmp(action, "check") == 0) {
+      Serial.printf("[OTA] check request=%s\n",
+                    otaService->requestCheck() ? "accepted" : "rejected");
+    } else if (std::strcmp(action, "update") == 0) {
+      Serial.printf("[OTA] update request=%s\n",
+                    otaService->requestUpdate() ? "accepted" : "rejected");
+    } else {
+      Serial.println("[OTA] usage: !ota status|check|update");
+    }
     return;
   }
   if (strncmp(command, "c3", 2) == 0) {
@@ -1604,21 +1683,24 @@ void setup() {
   });
   alarmService.begin(sdMounted);
   messageService.begin(sdMounted);
+  otaService = new (std::nothrow) OtaService();
+  if (otaService == nullptr) {
+    Serial.println("[OTA] allocation failed; OTA disabled");
+  } else {
+    otaService->begin(sdMounted);
+  }
   photos.setBottomGradient(true);
 
+  const ntfyconfig::Config& storedNtfy = loadNtfyConfig(sdMounted);
   NtfyClient::Config ntfyConfig;
-  ntfyConfig.baseUrl = MATEJA_NTFY_BASE_URL;
-  ntfyConfig.inboxTopic = MATEJA_NTFY_INBOX_TOPIC;
-  ntfyConfig.ackTopic =
-      MATEJA_NTFY_ACK_TOPIC[0] != '\0' ? MATEJA_NTFY_ACK_TOPIC
-                                       : MATEJA_NTFY_INBOX_TOPIC;
-  ntfyConfig.token = MATEJA_NTFY_ACCESS_TOKEN;
+  ntfyConfig.baseUrl = storedNtfy.baseUrl;
+  ntfyConfig.inboxTopic = storedNtfy.inboxTopic;
+  ntfyConfig.ackTopic = storedNtfy.ackTopic;
+  ntfyConfig.token = storedNtfy.accessToken;
   ntfyConfig.caCert = kMATEJA_NTFY_CA_CERT;  // public GTS Root R4 trust anchor
-#ifdef MATEJA_NTFY_CA_CERT
-  if (MATEJA_NTFY_CA_CERT != nullptr && MATEJA_NTFY_CA_CERT[0] != '\0') {
-    ntfyConfig.caCert = MATEJA_NTFY_CA_CERT;  // custom CA overrides the root
+  if (storedNtfy.caCert[0] != '\0') {
+    ntfyConfig.caCert = storedNtfy.caCert;
   }
-#endif
   ntfyClient.begin(ntfyConfig, messageService);
 
   homeScreen.setPhotoStartResult(photoStartResult);
@@ -1626,6 +1708,9 @@ void setup() {
   markPhotoChanged();
   photos.printStats();
   printCommands();
+  if (otaService != nullptr) {
+    otaService->markSetupHealthy(sdMounted && SD.exists(kWavPath));
+  }
 }
 
 void updateMessagePopup() {
@@ -1739,7 +1824,6 @@ void loop() {
   alarmAudio.update();
 
   const bool minuteChanged = clockTime.update();
-  ntfyClient.update(clockTime.wifiConnected());
   // Keep the DS1302 coprocessor in sync while NTP is authoritative, so the
   // clock stays accurate offline too.
   if (clockTime.source() == timesource::Source::kNtp &&
@@ -1750,6 +1834,20 @@ void loop() {
   if (alarmService.update(clockTime.snapshot())) {
     showRinging();
   }
+  OtaService::Conditions otaConditions;
+  otaConditions.wifiConnected = clockTime.wifiConnected();
+  otaConditions.timeValid = clockTime.snapshot().valid;
+  otaConditions.alarmActive =
+      alarmService.state() != alarmclock::AlarmState::Armed;
+  otaConditions.alarmAudioPlaying = alarmAudio.isPlaying();
+  otaConditions.rebootSafe =
+      !otaConditions.alarmActive && !otaConditions.alarmAudioPlaying &&
+      minutesUntilNextScheduledAlarm() > kOtaAlarmSafetyMinutes;
+  const bool otaExclusive = otaService != nullptr &&
+      otaService->needsNetworkExclusivity();
+  ntfyClient.setPaused(otaExclusive);
+  ntfyClient.update(clockTime.wifiConnected());
+  if (otaService != nullptr) otaService->update(otaConditions);
   if (screenMode == ScreenMode::Ringing) {
     const TimeService::Snapshot& now = clockTime.snapshot();
     ringingScreen.refreshCurrentTime(now.valid, now.hour, now.minute);

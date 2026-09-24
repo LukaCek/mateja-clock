@@ -1,5 +1,12 @@
 # Hardware Identification
 
+## OTA flash layout
+
+The CYD has 4 MiB flash. Bootstrap firmware uses two symmetric application
+slots: `ota_0` at `0x10000` and `ota_1` at `0x200000`, each `0x1F0000` bytes.
+The remaining flash contains NVS, OTA metadata, and a 64 KiB coredump partition;
+there is no flash filesystem. See `docs/OTA.md`.
+
 Last updated: 2026-09-14
 
 ## Confirmed Before Flashing

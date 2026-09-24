@@ -36,7 +36,8 @@ required directories, restores the logical ntfy checkpoint, re-applies the
 alarm configuration, and verifies the clock is operational.
 
 FULL mode preserves /clock/photos/, /clock/manifest.json, and the Wi-Fi
-credentials. It deletes messages, SD config/state, audio, emoji, temporary and
+credentials. Runtime ntfy/admin configuration stays on the SD card. It deletes
+messages, other SD config/state, audio, emoji, temporary and
 recovery files (including FSCK*.REC fragments), then restores whatever firmware
 requires from assets/sd/. Photo set equality before/after is enforced; a single
 missing photo fails the whole reset.
@@ -92,6 +93,7 @@ FULL_WARNING = (
     "PRESERVED:\n"
     "- Mateja photos\n"
     "- Wi-Fi credentials (captured, then restored)\n"
+    "- ntfy/admin runtime configuration\n"
     "\n"
     "RESET/REPLACED:\n"
     "- messages\n"
@@ -115,6 +117,9 @@ EMOJI_ASSETS = {
 }
 AUDIO_ASSET = os.path.join(ASSETS_DIR, "audio", "alarm.wav")
 WIFI_CONFIG_PATH = "/clock/config/wifi.json"
+NTFY_CONFIG_PATH = "/clock/config/ntfy.json"
+ADMIN_CONFIG_PATH = "/clock/config/admin.json"
+OTA_CONFIG_PATH = "/clock/config/ota.json"
 WIFI_HEADER_PATH = os.path.join(PROJECT_ROOT, "include", "wifi_credentials.h")
 
 
@@ -647,6 +652,25 @@ def verify_wifi_online(ser):
     return []
 
 
+def protected_config_sizes(ser):
+    _, files = list_dir_entries(ser, "/clock/config")
+    return {path: files[path] for path in
+            (NTFY_CONFIG_PATH, ADMIN_CONFIG_PATH, OTA_CONFIG_PATH)
+            if path in files}
+
+
+def verify_protected_configs(ser, expected):
+    problems = []
+    _, files = list_dir_entries(ser, "/clock/config")
+    if NTFY_CONFIG_PATH not in files:
+        problems.append("ntfy config missing after full reset")
+    for path, size in expected.items():
+        if files.get(path) != size:
+            problems.append("protected config changed: %s (%s != %s)" %
+                            (path, files.get(path), size))
+    return problems
+
+
 def restore_processed_checkpoint(ser, last_processed):
     if last_processed is None:
         return False, "no checkpoint value captured"
@@ -666,10 +690,13 @@ def reapply_alarm_config(ser, alarm):
     if alarm is None:
         problems.append("no alarm config captured; cannot re-apply")
         return problems
+    days_mask = alarm.get("days", 127)
+    days_bits = "".join("1" if days_mask & (1 << index) else "0"
+                        for index in range(7))
     commands = [
         "!alarm set %02d %02d" % (alarm.get("hour", 7),
                                   alarm.get("minute", 0)),
-        "!alarm days %s" % "{:07b}".format(alarm.get("days", 127)),
+        "!alarm days %s" % days_bits,
         "!alarm snooze-min %d" % alarm.get("snooze", 10),
         "!v %d" % alarm.get("volume", 65),
     ]
@@ -737,7 +764,8 @@ def full_reset_diagnostics(ser, photo_count):
     return problems
 
 
-def run_full_reset(ser, before_photos, before_msg, alarm_before, wifi_payload):
+def run_full_reset(ser, before_photos, before_msg, alarm_before, wifi_payload,
+                   protected_configs):
     """Execute and verify the full SD rebuild. Returns (ok, problems, report)."""
     problems = []
     report = {}
@@ -882,6 +910,7 @@ def run_full_reset(ser, before_photos, before_msg, alarm_before, wifi_payload):
     problems.extend(verify_emoji_on_sd(ser))
     problems.extend(verify_audio_on_sd(ser))
     problems.extend(verify_wifi_config(ser, wifi_payload))
+    problems.extend(verify_protected_configs(ser, protected_configs))
     problems.extend(verify_wifi_online(ser))
     problems.extend(full_reset_diagnostics(ser, len(photo_before_set)))
 
@@ -1058,7 +1087,8 @@ def parse_args(argv):
             "content on the SD card (messages, config/state, audio, emoji, "
             "temporary/recovery files), then restores the required production "
             "assets from assets/sd/ and verifies the clock is operational. "
-            "ONLY /clock/photos/ and the photo manifest are preserved."
+            "Photos, the photo manifest, and protected SD runtime config are "
+            "preserved."
         ),
         epilog=(
             "Normal use: connect the clock over USB and run "
@@ -1260,8 +1290,15 @@ def _run_full(ser):
     print("Collecting photo inventory...")
     before_photos = collect_sd_files(ser, "/clock/photos")
 
+    protected_configs = protected_config_sizes(ser)
+    if NTFY_CONFIG_PATH not in protected_configs:
+        return False, ["required ntfy config missing before wipe"], {}
+    print("  protected configs: %s" %
+          ", ".join(sorted(protected_configs)))
+
     ok, problems, report = run_full_reset(
-        ser, before_photos, before_msg, before_alarm, wifi_payload)
+        ser, before_photos, before_msg, before_alarm, wifi_payload,
+        protected_configs)
     return ok, problems, report
 
 

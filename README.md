@@ -51,6 +51,17 @@ The display and touch panel are mounted 180° from the original orientation, so
 the firmware uses `setRotation(1)` and mirrors the calibrated touch coordinates
 on both axes; the logical UI stays 320×240.
 
+Ntfy runtime configuration is also SD-backed. Migrate the ignored local header
+without printing its access token:
+
+```bash
+./.venv/bin/python tools/upload_ntfy_config.py
+```
+
+Firmware versioning and GitHub Release OTA are documented in `docs/OTA.md`.
+Use `!ota status`, `!ota check`, and `!ota update`; installation is explicit,
+TLS-verified, writes only the inactive OTA slot, and defers reboot around alarms.
+
 Build, upload, and monitor:
 
 ```bash
@@ -89,14 +100,18 @@ While NTP is unavailable the TimeService falls back to the coprocessor epoch, so
 
 ## Messages (Phase 4)
 
-For ntfy pushes, create the ignored local credentials header from the example
-and fill in your self-hosted server details:
+For ntfy pushes, create the ignored local migration header from the example,
+fill in your self-hosted server details, then upload them to the SD card:
 
 ```bash
 cp include/ntfy_credentials.example.h include/ntfy_credentials.h
+./.venv/bin/python tools/upload_ntfy_config.py
 ```
 
-`MATEJA_NTFY_BASE_URL` is your ntfy origin (no trailing slash), `MATEJA_NTFY_INBOX_TOPIC` is the love-message topic, `MATEJA_NTFY_ACK_TOPIC` is the seen-ack topic, and `MATEJA_NTFY_ACCESS_TOKEN` is the optional Bearer token. TLS is always verified: the firmware embeds the GTS Root R4 CA that signs the certificate chain of `ntfy.cekluka.com`, and fails closed if no CA is available. A `MATEJA_NTFY_CA_CERT` macro (a raw PEM string) overrides the embedded trust anchor for other servers. The firmware also builds without this file; the device then stays inert (`host=unset`).
+The upload helper writes `/clock/config/ntfy.json` without printing the bearer
+token. Release firmware contains no private ntfy topic or token. TLS always
+fails closed against the embedded public trust anchor or the optional SD-stored
+custom CA.
 
 The clock streams `GET <base>/<topic>/json?since=<lastId>` over TLS and only ingests `event=="message"` events, deduplicating by ntfy `id`. Resuming with `since=<id>` makes the stream lossless across reconnects and reboots; an HTTP 400 "invalid since" (e.g. a stale local checkpoint) automatically falls back to `since=latest`. Messages are stored newest-first in `/clock/messages/messages.json` (up to 100, oldest-READ-first pruning) and survive reboot. When a new unread message arrives while Home is idle, a 4.5-second popup appears near the bottom edge. Tap the top-right corner to open the list, then tap a row for the full text; opening the detail marks the message read and posts a "seen" acknowledgement (`POST <ackTopic>` with `X-Sequence-ID`) back to your ntfy server. Because the CYD cannot keep two TLS connections at once, the stream pauses briefly for the ack POST and resumes from `since=<id>`, and any ack still pending at boot is re-queued automatically.
 
@@ -133,6 +148,9 @@ Serial test commands require the `!` prefix and Enter:
 | `!msg ack` | Queue the seen-acknowledgement POST |
 | `!ntfy` | Print ntfy connection state |
 | `!ntfy reconnect` | Force a stream reconnection (replays new messages) |
+| `!ota status` | Print version, OTA slots, state, progress, and last error |
+| `!ota check` | Fetch and validate only the latest Release manifest |
+| `!ota update` | Explicitly install a newer validated Release into the inactive slot |
 | `!b 0..255` | Set the current backlight PWM level |
 | `!v 0..100` | Set the persisted alarm volume |
 | `!alarm` | Print alarm status |
@@ -146,7 +164,7 @@ Serial test commands require the `!` prefix and Enter:
 | `!alarm stop` | Stop an active ring |
 | `!alarm reset-day` | Debug: clear the handled occurrence so it can be re-tested |
 | `!gift-reset` | Clear all user/test state (messages, handled occurrence, Ringing/Snoozed); preserves all config and assets |
-| `!gift-reset-full` | Wipe all NON-PHOTO SD content; preserves only `/clock/photos/` and the photo manifest |
+| `!gift-reset-full` | Rebuild non-photo SD state while preserving photos and SD-only secret/runtime config |
 | `!msg processed <id>` | Restore the ntfy stream checkpoint (used by the host to avoid replaying retained messages) |
 | `!msg processed clear` | Clear the ntfy stream checkpoint (future messages start from latest) |
 | `!ls [dir]` | Read-only SD directory listing |
@@ -188,11 +206,13 @@ You must type `FULL RESET` at the prompt to confirm. With `--yes` the prompt is 
 What FULL mode preserves:
 - `/clock/photos/` (all Mateja photos, byte-identical set)
 - `/clock/manifest.json` (photo render manifest)
+- `/clock/config/ntfy.json`, `/clock/config/admin.json`, and
+  `/clock/config/ota.json` when present
 
 What FULL mode deletes and then restores:
 - All messages and processed-id checkpoint (restored to the exact prior checkpoint after rebuild)
 - Alarm runtime history (cleared; alarm settings re-applied from what the clock had before the wipe)
-- SD config/state files
+- Non-secret SD config/state files
 - Emoji RAW assets (restored from `assets/sd/emoji/`)
 - Alarm audio (restored from `assets/sd/audio/alarm.wav`)
 - Temporary and recovery files (including `FSCK*.REC` fragments)
@@ -201,11 +221,15 @@ What FULL mode never touches:
 - Flash contents (no firmware erase/reflash)
 - C3 coprocessor firmware or state
 - DS1302 RTC or display calibration
+- OTA slots, selected boot partition, or running firmware version
+- `/clock/config/ntfy.json`, `/clock/config/admin.json`, and
+  `/clock/config/ota.json`
 - Wi-Fi credentials (captured from `/clock/config/wifi.json` before the wipe and restored afterwards; the payload is never printed or committed)
-- ntfy credentials (compiled into the firmware)
+- ntfy credentials (stored only in `/clock/config/ntfy.json`)
 
 Production assets are restored from `assets/sd/` in the repository (`assets/sd/emoji/32/*.raw`, `assets/sd/emoji/48/*.raw`, `assets/sd/audio/alarm.wav`). The script aborts immediately — without modifying the clock — if any of these assets are missing locally.
 
 Post-rebuild verification: photo set equality (must match byte-for-byte), messages == 0, unread == 0, ntfy checkpoint preserved, Wi-Fi config restored byte-for-byte and Wi-Fi still connected, alarm state == armed with correct settings, all emoji present, alarm WAV restored, C3 connected, home screen displayed.
 
-The firmware targets the `huge_app.csv` partition (3 MB application, no OTA) because the audio library exceeds the default app partition.
+The firmware targets `partitions/ota_4mb.csv`: two 2,031,616-byte OTA slots,
+NVS, OTA metadata, and flash coredumps. See `docs/OTA.md`.
