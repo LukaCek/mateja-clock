@@ -1,5 +1,14 @@
 # Development Progress
 
+## RESOLVED - CYD clock time acceptance
+
+- CYD Home rendered but the clock showed `--:--` because the CYD and ESP32-C3
+  were physically disconnected while Wi-Fi/NTP was also unavailable.
+- Reconnecting the hardware restored the valid DS1302 time and the user
+  physically confirmed the real clock display, orientation, and normal behavior.
+- This was a hardware connection mistake, not a firmware defect; no workaround
+  was required.
+
 ## 2026-09-24 - OTA Bootstrap A (local)
 
 - Added SD-backed ntfy runtime configuration so release firmware contains no

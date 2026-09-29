@@ -51,6 +51,7 @@ class OtaService {
   void closeHttp();
   void updateFirstBootHealth();
   static const char* stateName(otalogic::OtaState state);
+  static const char* imageStateName(esp_ota_img_states_t state);
 
   char repository_[96] = {0};
   char manifestUrl_[256] = {0};

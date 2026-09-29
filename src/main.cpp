@@ -588,7 +588,7 @@ void printCommands() {
       "!d diagnostics, !q audio test, !m COUNT, !b 0..255, !v 0..100, "
       "!alarm [...], !wavraw BYTES, "
       "!msg [list|unread|read INDEX|ack|inject <text>|processed <id>|clear], "
-      "!ntfy, !ota [status|check|update], !rtc [sync], "
+      "!ntfy, !ota [status|check|update], !wifi [status|scan SSID], !rtc [sync], "
       "!c3, !c3 ping, !emoji, !gift-reset, !gift-reset-full, "
       "!ls [dir], !rmfile <path>, !wificfg get");
 }
@@ -821,6 +821,44 @@ void executeAlarmCommand(const char* command) {
 
 void executeCommand(const char* command) {
   if (command[0] == '\0') {
+    return;
+  }
+  if (strncmp(command, "wifi", 4) == 0 &&
+      (command[4] == '\0' || command[4] == ' ')) {
+    const char* action = command + 4;
+    while (*action == ' ') ++action;
+    if (*action == '\0' || std::strcmp(action, "status") == 0) {
+      const bool connected = WiFi.status() == WL_CONNECTED;
+      Serial.printf("[WIFI_STATUS] connected=%s status=%u rssi=%d ip=%s\n",
+                    connected ? "yes" : "no",
+                    static_cast<unsigned>(WiFi.status()),
+                    connected ? WiFi.RSSI() : 0,
+                    connected ? WiFi.localIP().toString().c_str() : "none");
+      return;
+    }
+    if (strncmp(action, "scan ", 5) == 0 && action[5] != '\0') {
+      const char* target = action + 5;
+      const int count = WiFi.scanNetworks(false, true);
+      bool found = false;
+      int bestRssi = -127;
+      int channel = 0;
+      int auth = 0;
+      for (int index = 0; index < count; ++index) {
+        if (WiFi.SSID(index) == target && WiFi.RSSI(index) > bestRssi) {
+          found = true;
+          bestRssi = WiFi.RSSI(index);
+          channel = WiFi.channel(index);
+          auth = static_cast<int>(WiFi.encryptionType(index));
+        }
+      }
+      WiFi.scanDelete();
+      Serial.printf("[WIFI_SCAN] target_len=%u visible=%s rssi=%d channel=%d auth=%d\n",
+                    static_cast<unsigned>(std::strlen(target)),
+                    found ? "yes" : "no", found ? bestRssi : 0,
+                    found ? channel : 0, found ? auth : -1);
+      return;
+    }
+    Serial.println("[WIFI] usage: !wifi status|scan SSID");
     return;
   }
   if (command[1] == '\0') {

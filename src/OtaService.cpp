@@ -57,6 +57,22 @@ void bytesToHex(const unsigned char* input, std::size_t length, char* output) {
   output[length * 2] = '\0';
 }
 
+bool extractHost(const char* url, char* output, std::size_t capacity) {
+  static const char prefix[] = "https://";
+  if (url == nullptr || output == nullptr || capacity == 0 ||
+      std::strncmp(url, prefix, sizeof(prefix) - 1) != 0) {
+    return false;
+  }
+  const char* host = url + sizeof(prefix) - 1;
+  const char* slash = std::strchr(host, '/');
+  if (slash == nullptr || slash == host) return false;
+  const std::size_t length = static_cast<std::size_t>(slash - host);
+  if (length >= capacity) return false;
+  std::memcpy(output, host, length);
+  output[length] = '\0';
+  return true;
+}
+
 }  // namespace
 
 extern "C" bool verifyRollbackLater() { return true; }
@@ -365,6 +381,11 @@ bool OtaService::openUrl(const char* initialUrl, std::uint32_t expectedSize,
   const char* headerKeys[] = {"Location"};
   for (unsigned redirect = 0; redirect <= kMaxRedirects; ++redirect) {
     if (!allowedUrl(url)) { fail("redirect host rejected"); return false; }
+    char host[64];
+    if (!extractHost(url, host, sizeof(host))) {
+      fail("HTTPS host invalid"); return false;
+    }
+    Serial.printf("[OTA_HTTP] request host=%s hop=%u\n", host, redirect);
     tls_.stop();
     tls_.setCACertBundle(x509_crt_bundle_start);
     tls_.setHandshakeTimeout(3);
@@ -389,6 +410,10 @@ bool OtaService::openUrl(const char* initialUrl, std::uint32_t expectedSize,
       } else {
         std::snprintf(url, sizeof(url), "%s", location.c_str());
       }
+      if (!allowedUrl(url) || !extractHost(url, host, sizeof(host))) {
+        closeHttp(); fail("redirect host rejected"); return false;
+      }
+      Serial.printf("[OTA_HTTP] redirect host=%s\n", host);
       continue;
     }
     if (status != HTTP_CODE_OK) { closeHttp(); fail("HTTPS status failed"); return false; }
@@ -444,17 +469,35 @@ const char* OtaService::stateName(otalogic::OtaState state) {
   return "unknown";
 }
 
+const char* OtaService::imageStateName(esp_ota_img_states_t state) {
+  switch (state) {
+    case ESP_OTA_IMG_NEW: return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+    case ESP_OTA_IMG_VALID: return "valid";
+    case ESP_OTA_IMG_INVALID: return "invalid";
+    case ESP_OTA_IMG_ABORTED: return "aborted";
+    case ESP_OTA_IMG_UNDEFINED: return "undefined";
+  }
+  return "undefined";
+}
+
 void OtaService::printStatus() const {
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* boot = esp_ota_get_boot_partition();
   const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+  esp_ota_img_states_t imageState = ESP_OTA_IMG_UNDEFINED;
+  if (running == nullptr ||
+      esp_ota_get_state_partition(running, &imageState) != ESP_OK) {
+    imageState = ESP_OTA_IMG_UNDEFINED;
+  }
   Serial.printf(
       "[OTA_STATUS] version=%s state=%s configured=%s repository=%s "
-      "running=%s boot=%s target=%s slots=%u slot_bytes=%u received=%u "
+      "running=%s boot=%s target=%s image_state=%s slots=%u slot_bytes=%u received=%u "
       "available=%s reboot_pending=%s pending_verify=%s error=%s\n",
       MATEJA_CLOCK_VERSION, stateName(state_), configured_ ? "yes" : "no",
       configured_ ? repository_ : "(none)", running ? running->label : "none",
       boot ? boot->label : "none", next ? next->label : "none",
+      imageStateName(imageState),
       static_cast<unsigned>(esp_ota_get_app_partition_count()),
       static_cast<unsigned>(next ? next->size : 0),
       static_cast<unsigned>(received_),
