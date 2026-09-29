@@ -13,6 +13,8 @@ constexpr char kConfigPath[] = "/clock/config/ota.json";
 constexpr std::size_t kMaxManifestBytes = 2048;
 constexpr std::size_t kChunkBytes = 1024;
 constexpr std::uint32_t kReadIdleTimeoutMs = 10000;
+constexpr std::uint32_t kConnectTimeoutMs = 10000;
+constexpr unsigned kHandshakeTimeoutSeconds = 10;
 constexpr std::uint32_t kHealthDelayMs = 15000;
 constexpr std::uint32_t kHealthLoops = 100;
 constexpr unsigned kMaxRedirects = 5;
@@ -376,7 +378,7 @@ bool OtaService::allowedUrl(const char* url) const {
 
 bool OtaService::openUrl(const char* initialUrl, std::uint32_t expectedSize,
                          bool requireLength) {
-  char url[512];
+  char url[1024];
   std::snprintf(url, sizeof(url), "%s", initialUrl);
   const char* headerKeys[] = {"Location"};
   for (unsigned redirect = 0; redirect <= kMaxRedirects; ++redirect) {
@@ -388,15 +390,22 @@ bool OtaService::openUrl(const char* initialUrl, std::uint32_t expectedSize,
     Serial.printf("[OTA_HTTP] request host=%s hop=%u\n", host, redirect);
     tls_.stop();
     tls_.setCACertBundle(x509_crt_bundle_start);
-    tls_.setHandshakeTimeout(3);
-    tls_.setTimeout(3);
+    tls_.setHandshakeTimeout(kHandshakeTimeoutSeconds);
+    tls_.setTimeout(kHandshakeTimeoutSeconds);
     http_.setReuse(false);
-    http_.setConnectTimeout(3000);
-    http_.setTimeout(3000);
+    http_.setConnectTimeout(kConnectTimeoutMs);
+    http_.setTimeout(kConnectTimeoutMs);
     http_.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http_.collectHeaders(headerKeys, 1);
     if (!http_.begin(tls_, url)) { fail("HTTPS begin failed"); return false; }
     const int status = http_.GET();
+    Serial.printf("[OTA_HTTP] result=%d\n", status);
+    if (status < 0) {
+      char tlsError[128];
+      const int tlsCode = tls_.lastError(tlsError, sizeof(tlsError));
+      Serial.printf("[OTA_HTTP] tls_error=%d detail=%s\n", tlsCode,
+                    tlsError[0] != '\0' ? tlsError : "none");
+    }
     if (status == HTTP_CODE_MOVED_PERMANENTLY || status == HTTP_CODE_FOUND ||
         status == HTTP_CODE_SEE_OTHER || status == HTTP_CODE_TEMPORARY_REDIRECT ||
         status == HTTP_CODE_PERMANENT_REDIRECT) {
